@@ -1,35 +1,35 @@
-# Lynx Snowflake ID Generator Plugin
+# Lynx Eon-ID Plugin
 
-一个高性能、分布式唯一 ID 生成器插件，基于 Twitter Snowflake 算法实现，专为 [Go-Lynx](https://github.com/go-lynx/lynx) 微服务框架设计。
+A high-performance, distributed unique ID generator plugin based on the Twitter Snowflake algorithm, designed for the [Go-Lynx](https://github.com/go-lynx/lynx) microservices framework.
 
-## ✨ 特性
+## ✨ Features
 
-- 🚀 **高性能**: 单节点每毫秒可生成数千个唯一 ID
-- 🔄 **分布式**: 支持多数据中心、多节点部署，保证全局唯一
-- ⏰ **时钟漂移保护**: 内置时钟回拨检测与处理机制
-- 📝 **自动注册**: 基于 Redis 的 Worker ID 自动注册与心跳维护
-- 📊 **指标监控**: 内置详细的性能指标收集
-- 🔒 **线程安全**: 完全并发安全的 ID 生成
-- ⚡ **序列缓存**: 可选的序列号缓存优化
+- 🚀 **High Performance**: Generate thousands of unique IDs per millisecond on a single node
+- 🔄 **Distributed**: Support multi-datacenter, multi-node deployment with globally unique IDs
+- ⏰ **Clock Drift Protection**: Built-in clock backward detection and handling mechanism
+- 📝 **Auto Registration**: Redis-based Worker ID auto-registration with heartbeat maintenance
+- 📊 **Metrics Monitoring**: Built-in detailed performance metrics collection
+- 🔒 **Thread Safe**: Fully concurrent-safe ID generation
+- ⚡ **Sequence Cache**: Optional sequence number caching optimization
 
-## 📦 安装
+## 📦 Installation
 
 ```bash
-go get github.com/go-lynx/lynx/plugins/snowflake
+go get github.com/go-lynx/lynx/plugins/eon-id
 ```
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 1. 配置文件
+### 1. Configuration
 
-在 `config.yml` 中添加插件配置：
+Add plugin configuration in `config.yml`:
 
 ```yaml
 lynx:
-  snowflake:
+  eon-id:
     datacenter_id: 1
     auto_register_worker_id: true
-    redis_key_prefix: "lynx:snowflake:worker"
+    redis_key_prefix: "lynx:eon-id:worker"
     worker_id_ttl: "30s"
     heartbeat_interval: "10s"
     enable_clock_drift_protection: true
@@ -39,7 +39,7 @@ lynx:
     redis_plugin_name: "default"
 ```
 
-### 2. 使用插件
+### 2. Usage
 
 ```go
 package main
@@ -47,24 +47,24 @@ package main
 import (
     "fmt"
     
-    snowflake "github.com/go-lynx/lynx/plugins/snowflake"
+    eonid "github.com/go-lynx/lynx/plugins/eon-id"
 )
 
 func main() {
-    // 获取 Snowflake 生成器实例
-    generator := snowflake.GetSnowflakeGenerator()
+    // Get Eon-ID generator instance
+    generator := eonid.GetSnowflakeGenerator()
     if generator == nil {
-        panic("snowflake generator not initialized")
+        panic("eon-id generator not initialized")
     }
     
-    // 生成唯一 ID
+    // Generate unique ID
     id, err := generator.GenerateID()
     if err != nil {
         panic(err)
     }
     fmt.Printf("Generated ID: %d\n", id)
     
-    // 生成带元数据的 ID
+    // Generate ID with metadata
     id, metadata, err := generator.GenerateIDWithMetadata()
     if err != nil {
         panic(err)
@@ -72,7 +72,7 @@ func main() {
     fmt.Printf("ID: %d, Timestamp: %v, WorkerID: %d\n", 
         id, metadata.Timestamp, metadata.WorkerID)
     
-    // 解析已有的 ID
+    // Parse existing ID
     parsed, err := generator.ParseID(id)
     if err != nil {
         panic(err)
@@ -82,49 +82,49 @@ func main() {
 }
 ```
 
-## ⚙️ 配置说明
+## ⚙️ Configuration Reference
 
-### 基础配置
+### Basic Configuration
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `datacenter_id` | int | 1 | 数据中心 ID (0-31) |
-| `worker_id` | int | 0 | Worker ID，若不设置则自动注册 |
-| `auto_register_worker_id` | bool | true | 启用基于 Redis 的自动 Worker ID 注册 |
-| `redis_key_prefix` | string | "snowflake:" | Redis 键前缀 |
-| `worker_id_ttl` | duration | 30s | Worker ID 注册 TTL |
-| `heartbeat_interval` | duration | 10s | 心跳间隔 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `datacenter_id` | int | 1 | Datacenter ID (0-31) |
+| `worker_id` | int | 0 | Worker ID, auto-registered if not set |
+| `auto_register_worker_id` | bool | true | Enable Redis-based auto Worker ID registration |
+| `redis_key_prefix` | string | "snowflake:" | Redis key prefix |
+| `worker_id_ttl` | duration | 30s | Worker ID registration TTL |
+| `heartbeat_interval` | duration | 10s | Heartbeat interval |
 
-### 时钟漂移保护
+### Clock Drift Protection
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enable_clock_drift_protection` | bool | true | 启用时钟漂移保护 |
-| `max_clock_drift` | duration | 5s | 最大允许的时钟回拨 |
-| `clock_check_interval` | duration | 1s | 时钟检查间隔 |
-| `clock_drift_action` | string | "wait" | 时钟漂移处理策略: `wait`/`error`/`ignore` |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enable_clock_drift_protection` | bool | true | Enable clock drift protection |
+| `max_clock_drift` | duration | 5s | Maximum allowed clock backward |
+| `clock_check_interval` | duration | 1s | Clock check interval |
+| `clock_drift_action` | string | "wait" | Clock drift handling strategy: `wait`/`error`/`ignore` |
 
-### 性能配置
+### Performance Configuration
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enable_sequence_cache` | bool | false | 启用序列号缓存 |
-| `sequence_cache_size` | int | 1000 | 序列缓存大小 |
-| `enable_metrics` | bool | true | 启用指标收集 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enable_sequence_cache` | bool | false | Enable sequence number caching |
+| `sequence_cache_size` | int | 1000 | Sequence cache size |
+| `enable_metrics` | bool | true | Enable metrics collection |
 
-### 高级配置
+### Advanced Configuration
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `custom_epoch` | int64 | 1609459200000 | 自定义纪元时间戳 (毫秒) |
-| `worker_id_bits` | int | 5 | Worker ID 位数 (1-20) |
-| `sequence_bits` | int | 12 | 序列号位数 (1-20) |
-| `redis_plugin_name` | string | "redis" | Redis 插件名称 |
-| `redis_db` | int | 0 | Redis 数据库编号 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `custom_epoch` | int64 | 1609459200000 | Custom epoch timestamp (milliseconds) |
+| `worker_id_bits` | int | 5 | Worker ID bits (1-20) |
+| `sequence_bits` | int | 12 | Sequence bits (1-20) |
+| `redis_plugin_name` | string | "redis" | Redis plugin name |
+| `redis_db` | int | 0 | Redis database number |
 
-## 🏗️ ID 结构
+## 🏗️ ID Structure
 
-默认的 64 位 ID 结构：
+Default 64-bit ID structure:
 
 ```
 +--------------------------------------------------------------------------+
@@ -133,22 +133,22 @@ func main() {
 +--------------------------------------------------------------------------+
 ```
 
-- **1 bit**: 符号位（始终为 0）
-- **41 bits**: 时间戳（毫秒级，可用约 69 年）
-- **5 bits**: 数据中心 ID（0-31）
-- **5 bits**: Worker ID（0-31）
-- **12 bits**: 序列号（每毫秒 0-4095）
+- **1 bit**: Sign bit (always 0)
+- **41 bits**: Timestamp (milliseconds, ~69 years lifespan)
+- **5 bits**: Datacenter ID (0-31)
+- **5 bits**: Worker ID (0-31)
+- **12 bits**: Sequence number (0-4095 per millisecond)
 
-## 🔧 环境配置示例
+## 🔧 Environment Configuration Examples
 
-### 生产环境
+### Production
 
 ```yaml
 lynx:
-  snowflake:
+  eon-id:
     datacenter_id: 1
     auto_register_worker_id: true
-    redis_key_prefix: "prod:lynx:snowflake:worker"
+    redis_key_prefix: "prod:lynx:eon-id:worker"
     worker_id_ttl: "60s"
     heartbeat_interval: "20s"
     enable_clock_drift_protection: true
@@ -159,11 +159,11 @@ lynx:
     enable_metrics: true
 ```
 
-### 开发环境
+### Development
 
 ```yaml
 lynx:
-  snowflake:
+  eon-id:
     datacenter_id: 0
     worker_id: 1
     auto_register_worker_id: false
@@ -172,11 +172,11 @@ lynx:
     enable_metrics: false
 ```
 
-### 高并发场景
+### High Concurrency
 
 ```yaml
 lynx:
-  snowflake:
+  eon-id:
     datacenter_id: 2
     auto_register_worker_id: true
     worker_id_ttl: "120s"
@@ -190,22 +190,22 @@ lynx:
     sequence_bits: 14
 ```
 
-## 🏢 多数据中心部署
+## 🏢 Multi-Datacenter Deployment
 
-在多数据中心部署时，每个数据中心使用不同的 `datacenter_id`：
+When deploying across multiple datacenters, use different `datacenter_id` for each:
 
-- 数据中心 A: `datacenter_id: 0`
-- 数据中心 B: `datacenter_id: 1`
-- 数据中心 C: `datacenter_id: 2`
+- Datacenter A: `datacenter_id: 0`
+- Datacenter B: `datacenter_id: 1`
+- Datacenter C: `datacenter_id: 2`
 
-这确保了不同数据中心生成的 ID 不会冲突。
+This ensures IDs generated from different datacenters will never conflict.
 
-## 📊 健康检查
+## 📊 Health Check
 
-插件提供详细的健康检查报告：
+The plugin provides detailed health check reports:
 
 ```go
-generator := snowflake.GetSnowflakeGenerator()
+generator := eonid.GetSnowflakeGenerator()
 health := generator.GetHealth()
 
 fmt.Printf("Status: %s\n", health.Status)
@@ -213,30 +213,29 @@ fmt.Printf("Message: %s\n", health.Message)
 fmt.Printf("Details: %+v\n", health.Details)
 ```
 
-健康状态：
-- `healthy`: 正常运行
-- `degraded`: 存在警告（如时钟回拨事件、高错误率）
-- `unhealthy`: 服务不可用
+Health statuses:
+- `healthy`: Operating normally
+- `degraded`: Warnings present (e.g., clock backward events, high error rate)
+- `unhealthy`: Service unavailable
 
-## 🧪 运行测试
+## 🧪 Running Tests
 
 ```bash
-# 运行所有测试
+# Run all tests
 go test ./...
 
-# 运行性能测试
+# Run benchmark tests
 go test -bench=. -benchmem
 
-# 运行压力测试
+# Run stress tests
 go test -run TestStress
 ```
 
-## 📄 许可证
+## 📄 License
 
 MIT License
 
-## 🔗 相关链接
+## 🔗 Related Links
 
-- [Go-Lynx 框架](https://github.com/go-lynx/lynx)
+- [Go-Lynx Framework](https://github.com/go-lynx/lynx)
 - [Twitter Snowflake](https://github.com/twitter-archive/snowflake)
-
