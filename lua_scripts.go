@@ -1,4 +1,4 @@
-package snowflake
+package eonId
 
 // Lua scripts for snowflake ID generator Redis operations
 // All scripts are executed atomically by Redis

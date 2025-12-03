@@ -2,10 +2,10 @@
 syntax = "proto3";
 
 // Package name used for generated code
-package lynx.protobuf.plugin.snowflake;
+package lynx.protobuf.plugin.eonId;
 
 // Set go_package for generated Go code
-option go_package = "github.com/go-lynx/lynx/plugins/snowflake/conf;conf";
+option go_package = "github.com/go-lynx/lynx/plugins/eonId/conf;conf";
 
 // Import Duration type from google/protobuf/duration.proto
 import "google/protobuf/duration.proto";

@@ -1,4 +1,4 @@
-package snowflake
+package eonId
 
 import (
 	"github.com/go-lynx/lynx"
