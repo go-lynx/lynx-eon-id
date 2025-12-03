@@ -1,8 +1,8 @@
 package snowflake
 
 import (
-	"github.com/go-lynx/lynx/app"
-	"github.com/go-lynx/lynx/app/factory"
+	"github.com/go-lynx/lynx"
+	"github.com/go-lynx/lynx/pkg/factory"
 	"github.com/go-lynx/lynx/plugins"
 )
 
@@ -25,7 +25,7 @@ func init() {
 // Returns nil if the application, plugin manager, or plugin is not available.
 func GetSnowflakeGenerator() *PlugSnowflake {
 	// Check if Lynx application is initialized
-	lynxApp := app.Lynx()
+	lynxApp := lynx.Lynx()
 	if lynxApp == nil {
 		return nil
 	}

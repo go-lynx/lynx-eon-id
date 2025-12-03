@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	pb "github.com/go-lynx/lynx/plugins/snowflake/conf"
+	pb "github.com/go-lynx/lynx-eon-id/conf"
 )
 
 // ValidateSnowflakeConfig validates the complete snowflake configuration

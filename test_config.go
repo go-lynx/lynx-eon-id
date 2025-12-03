@@ -3,7 +3,7 @@ package snowflake
 import (
 	"time"
 
-	pb "github.com/go-lynx/lynx/plugins/snowflake/conf"
+	pb "github.com/go-lynx/lynx-eon-id/conf"
 )
 
 // TestConfig provides test configuration utilities

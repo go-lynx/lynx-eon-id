@@ -11,7 +11,7 @@ import (
 	"github.com/go-lynx/lynx/plugins"
 	"github.com/redis/go-redis/v9"
 
-	pb "github.com/go-lynx/lynx/plugins/snowflake/conf"
+	pb "github.com/go-lynx/lynx-eon-id/conf"
 )
 
 // PlugSnowflake represents a Snowflake ID generator plugin instance

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/go-lynx/lynx/app"
-	"github.com/go-lynx/lynx/app/factory"
+	"github.com/go-lynx/lynx"
+	"github.com/go-lynx/lynx/pkg/factory"
 )
 
 var (
@@ -18,8 +18,8 @@ var (
 // GetSnowflakePlugin retrieves the snowflake plugin from the application
 func GetSnowflakePlugin() (*PlugSnowflake, error) {
 	// Try to get from application plugin manager first
-	if app.Lynx() != nil && app.Lynx().GetPluginManager() != nil {
-		plugin := app.Lynx().GetPluginManager().GetPlugin(PluginName)
+	if lynx.Lynx() != nil && lynx.Lynx().GetPluginManager() != nil {
+		plugin := lynx.Lynx().GetPluginManager().GetPlugin(PluginName)
 		if plugin != nil {
 			if snowflakePlugin, ok := plugin.(*PlugSnowflake); ok {
 				return snowflakePlugin, nil

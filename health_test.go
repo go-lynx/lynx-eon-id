@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	pb "github.com/go-lynx/lynx/plugins/snowflake/conf"
+	pb "github.com/go-lynx/lynx-eon-id/conf"
 )
 
 func TestPlugSnowflake_GetHealth(t *testing.T) {

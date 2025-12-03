@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	pb "github.com/go-lynx/lynx/plugins/snowflake/conf"
+	pb "github.com/go-lynx/lynx-eon-id/conf"
 )
 
 // NewSnowflakeGeneratorWithConfig creates a new snowflake ID generator with protobuf config

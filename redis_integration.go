@@ -9,7 +9,7 @@ import (
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/redis/go-redis/v9"
 
-	pb "github.com/go-lynx/lynx/plugins/snowflake/conf"
+	pb "github.com/go-lynx/lynx-eon-id/conf"
 )
 
 // RedisIntegration handles integration with Redis plugin
