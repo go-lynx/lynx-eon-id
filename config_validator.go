@@ -8,9 +8,9 @@ import (
 )
 
 // ValidateSnowflakeConfig validates the complete snowflake configuration
-func ValidateSnowflakeConfig(config *pb.Snowflake) error {
+func ValidateSnowflakeConfig(config *pb.EonId) error {
 	if config == nil {
-		return fmt.Errorf("snowflake configuration cannot be nil")
+		return fmt.Errorf("eon-id configuration cannot be nil")
 	}
 
 	// Validate basic configuration
@@ -47,7 +47,7 @@ func ValidateSnowflakeConfig(config *pb.Snowflake) error {
 }
 
 // validateBasicConfig validates basic snowflake configuration
-func validateBasicConfig(config *pb.Snowflake) error {
+func validateBasicConfig(config *pb.EonId) error {
 	// Validate datacenter ID
 	if config.DatacenterId < 0 || config.DatacenterId > 31 {
 		return fmt.Errorf("datacenter ID must be between 0 and 31, got %d", config.DatacenterId)
@@ -69,7 +69,7 @@ func validateBasicConfig(config *pb.Snowflake) error {
 }
 
 // validateRedisIntegrationConfig validates Redis integration configuration
-func validateRedisIntegrationConfig(config *pb.Snowflake) error {
+func validateRedisIntegrationConfig(config *pb.EonId) error {
 	// If auto-registration is enabled, Redis configuration is required
 	if config.AutoRegisterWorkerId {
 		if config.RedisPluginName == "" {
@@ -129,7 +129,7 @@ func validateRedisIntegrationConfig(config *pb.Snowflake) error {
 }
 
 // validateClockDriftConfig validates clock drift protection configuration
-func validateClockDriftConfig(config *pb.Snowflake) error {
+func validateClockDriftConfig(config *pb.EonId) error {
 	if config.EnableClockDriftProtection {
 		// Validate max clock drift
 		if config.MaxClockDrift != nil {
@@ -174,7 +174,7 @@ func validateClockDriftConfig(config *pb.Snowflake) error {
 }
 
 // validatePerformanceConfig validates performance configuration
-func validatePerformanceConfig(config *pb.Snowflake) error {
+func validatePerformanceConfig(config *pb.EonId) error {
 	if config.EnableSequenceCache {
 		if config.SequenceCacheSize <= 0 {
 			return fmt.Errorf("sequence cache size must be positive when cache is enabled")
@@ -206,7 +206,7 @@ func validatePerformanceConfig(config *pb.Snowflake) error {
 }
 
 // validateAdvancedConfig validates advanced configuration
-func validateAdvancedConfig(config *pb.Snowflake) error {
+func validateAdvancedConfig(config *pb.EonId) error {
 	// Validate custom epoch
 	if config.CustomEpoch != 0 {
 		currentTimestamp := time.Now().UnixMilli()
@@ -239,7 +239,7 @@ func validateAdvancedConfig(config *pb.Snowflake) error {
 }
 
 // validateBitAllocation validates bit allocation configuration
-func validateBitAllocation(config *pb.Snowflake) error {
+func validateBitAllocation(config *pb.EonId) error {
 	// Use defaults if not specified
 	datacenterBits := int32(5) // Default
 	workerBits := config.WorkerIdBits
@@ -294,7 +294,7 @@ func validateBitAllocation(config *pb.Snowflake) error {
 }
 
 // validateConfigConsistency validates consistency between different configuration sections
-func validateConfigConsistency(config *pb.Snowflake) error {
+func validateConfigConsistency(config *pb.EonId) error {
 	// If metrics are enabled but sequence cache is disabled, warn about potential performance impact
 	if config.EnableMetrics && !config.EnableSequenceCache {
 		// This is more of a warning than an error, but we could log it

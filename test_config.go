@@ -10,7 +10,7 @@ import (
 type TestConfig struct {
 	DatacenterID int64
 	WorkerID     int64
-	Config       *pb.Snowflake
+	Config       *pb.EonId
 }
 
 // NewTestConfig creates a new test configuration
@@ -23,8 +23,8 @@ func NewTestConfig(datacenterID, workerID int64) *TestConfig {
 }
 
 // createDefaultTestConfig creates a default test configuration
-func createDefaultTestConfig(datacenterID, workerID int64) *pb.Snowflake {
-	return &pb.Snowflake{
+func createDefaultTestConfig(datacenterID, workerID int64) *pb.EonId {
+	return &pb.EonId{
 		DatacenterId:               int32(datacenterID),
 		WorkerId:                   int32(workerID),
 		CustomEpoch:                1640995200000, // 2022-01-01 00:00:00 UTC
@@ -81,7 +81,7 @@ func (tc *TestConfig) WithKeyPrefixes(redisKeyPrefix string) *TestConfig {
 }
 
 // Build returns the final configuration
-func (tc *TestConfig) Build() *pb.Snowflake {
+func (tc *TestConfig) Build() *pb.EonId {
 	return tc.Config
 }
 
@@ -107,8 +107,8 @@ func (tc *TestConfig) CreateTestPlugin() *PlugSnowflake {
 }
 
 // MinimalConfig creates a minimal configuration for testing
-func MinimalConfig(datacenterID, workerID int64) *pb.Snowflake {
-	return &pb.Snowflake{
+func MinimalConfig(datacenterID, workerID int64) *pb.EonId {
+	return &pb.EonId{
 		DatacenterId: int32(datacenterID),
 		WorkerId:     int32(workerID),
 		CustomEpoch:  1640995200000, // 2022-01-01 00:00:00 UTC
@@ -118,7 +118,7 @@ func MinimalConfig(datacenterID, workerID int64) *pb.Snowflake {
 }
 
 // RedisTestConfig creates a configuration with Redis for testing
-func RedisTestConfig(datacenterID, workerID int64, redisPluginName string) *pb.Snowflake {
+func RedisTestConfig(datacenterID, workerID int64, redisPluginName string) *pb.EonId {
 	config := MinimalConfig(datacenterID, workerID)
 	config.AutoRegisterWorkerId = true
 	config.RedisPluginName = redisPluginName
@@ -129,7 +129,7 @@ func RedisTestConfig(datacenterID, workerID int64, redisPluginName string) *pb.S
 }
 
 // ClockDriftTestConfig creates a configuration with clock drift protection
-func ClockDriftTestConfig(datacenterID, workerID int64) *pb.Snowflake {
+func ClockDriftTestConfig(datacenterID, workerID int64) *pb.EonId {
 	config := MinimalConfig(datacenterID, workerID)
 	config.EnableClockDriftProtection = true
 	config.ClockDriftAction = ClockDriftActionWait
@@ -138,7 +138,7 @@ func ClockDriftTestConfig(datacenterID, workerID int64) *pb.Snowflake {
 }
 
 // SequenceCacheTestConfig creates a configuration with sequence cache
-func SequenceCacheTestConfig(datacenterID, workerID int64, cacheSize int32) *pb.Snowflake {
+func SequenceCacheTestConfig(datacenterID, workerID int64, cacheSize int32) *pb.EonId {
 	config := MinimalConfig(datacenterID, workerID)
 	config.EnableSequenceCache = true
 	config.SequenceCacheSize = cacheSize

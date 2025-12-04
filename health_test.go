@@ -159,13 +159,13 @@ func TestPlugSnowflake_GetHealth_WithConfiguration(t *testing.T) {
 	plugin := NewSnowflakePlugin()
 
 	// Set up configuration
-	config := &pb.Snowflake{
+	config := &pb.EonId{
 		DatacenterId:               1,
 		WorkerId:                   2,
 		CustomEpoch:                1640995200000,
 		AutoRegisterWorkerId:       true,
 		RedisPluginName:            "redis",
-		RedisKeyPrefix:             "snowflake:",
+		RedisKeyPrefix:             "eon-id:",
 		WorkerIdTtl:                durationpb.New(300 * time.Second),
 		HeartbeatInterval:          durationpb.New(30 * time.Second),
 		EnableMetrics:              true,
@@ -189,7 +189,7 @@ func TestPlugSnowflake_GetHealth_WithConfiguration(t *testing.T) {
 	assert.Equal(t, int64(1640995200000), configDetails["custom_epoch"])
 	assert.Equal(t, true, configDetails["auto_register_worker_id"])
 	assert.Equal(t, "redis", configDetails["redis_plugin_name"])
-	assert.Equal(t, "snowflake:", configDetails["redis_key_prefix"])
+	assert.Equal(t, "eon-id:", configDetails["redis_key_prefix"])
 	assert.NotNil(t, configDetails["worker_id_ttl"])
 	assert.NotNil(t, configDetails["heartbeat_interval"])
 	assert.Equal(t, true, configDetails["enable_metrics"])
@@ -208,7 +208,7 @@ func TestPlugSnowflake_GetHealth_WithWorkerManager(t *testing.T) {
 	workerManager := &WorkerIDManager{
 		workerID:          1,
 		datacenterID:      2,
-		keyPrefix:         "snowflake:",
+		keyPrefix:         "eon-id:",
 		ttl:               5 * time.Minute,
 		heartbeatInterval: 30 * time.Second,
 	}
@@ -219,7 +219,7 @@ func TestPlugSnowflake_GetHealth_WithWorkerManager(t *testing.T) {
 	assert.Equal(t, "active", health.Details["worker_manager_status"])
 	assert.Equal(t, int64(1), health.Details["worker_manager_worker_id"])
 	assert.Equal(t, int64(2), health.Details["worker_manager_datacenter_id"])
-	assert.Equal(t, "snowflake:", health.Details["worker_manager_key_prefix"])
+	assert.Equal(t, "eon-id:", health.Details["worker_manager_key_prefix"])
 	assert.Equal(t, "5m0s", health.Details["worker_manager_ttl"])
 	assert.Equal(t, "30s", health.Details["worker_manager_heartbeat_interval"])
 }

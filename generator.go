@@ -10,7 +10,7 @@ import (
 )
 
 // NewSnowflakeGeneratorWithConfig creates a new snowflake ID generator with protobuf config
-func NewSnowflakeGeneratorWithConfig(config *pb.Snowflake) (*Generator, error) {
+func NewSnowflakeGeneratorWithConfig(config *pb.EonId) (*Generator, error) {
 	// Convert protobuf config to internal config
 	internalConfig := &GeneratorConfig{
 		CustomEpoch:                config.CustomEpoch,

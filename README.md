@@ -91,7 +91,7 @@ func main() {
 | `datacenter_id` | int | 1 | Datacenter ID (0-31) |
 | `worker_id` | int | 0 | Worker ID, auto-registered if not set |
 | `auto_register_worker_id` | bool | true | Enable Redis-based auto Worker ID registration |
-| `redis_key_prefix` | string | "snowflake:" | Redis key prefix |
+| `redis_key_prefix` | string | "eon-id:" | Redis key prefix |
 | `worker_id_ttl` | duration | 30s | Worker ID registration TTL |
 | `heartbeat_interval` | duration | 10s | Heartbeat interval |
 

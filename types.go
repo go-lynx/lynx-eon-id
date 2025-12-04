@@ -18,8 +18,8 @@ import (
 type PlugSnowflake struct {
 	// Inherits from base plugin
 	*plugins.BasePlugin
-	// Snowflake configuration
-	conf *pb.Snowflake
+	// Eon-ID configuration
+	conf *pb.EonId
 	// Redis client for worker ID registration
 	redisClient redis.UniversalClient
 	// Worker ID manager
@@ -226,7 +226,7 @@ const (
 	DefaultEpoch            = 1609459200000 // 2021-01-01 00:00:00 UTC in milliseconds
 	DefaultMaxClockBackward = 5000          // 5 seconds in milliseconds
 
-	DefaultRedisKeyPrefix    = "snowflake:"
+	DefaultRedisKeyPrefix    = "eon-id:"
 	DefaultWorkerIDTTL       = 30 * time.Second
 	DefaultHeartbeatInterval = 10 * time.Second
 )
@@ -243,8 +243,8 @@ const (
 	DefaultSequenceCacheSize = 1000
 
 	// WorkerIDLockKey Redis key patterns
-	WorkerIDLockKey     = "lynx:snowflake:lock:worker_id"
-	WorkerIDRegistryKey = "lynx:snowflake:registry"
+	WorkerIDLockKey     = "lynx:eon-id:lock:worker_id"
+	WorkerIDRegistryKey = "lynx:eon-id:registry"
 
 	// ClockDriftActionWait Clock drift actions
 	ClockDriftActionWait   = "wait"
@@ -278,7 +278,7 @@ func (p *PlugSnowflake) Weight() int {
 
 // UpdateConfiguration updates the plugin configuration
 func (p *PlugSnowflake) UpdateConfiguration(config interface{}) error {
-	if conf, ok := config.(*pb.Snowflake); ok {
+	if conf, ok := config.(*pb.EonId); ok {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.conf = conf
@@ -295,14 +295,14 @@ func (p *PlugSnowflake) Initialize(plugin plugins.Plugin, runtime plugins.Runtim
 	p.logger = runtime.GetLogger()
 
 	// Get configuration
-	conf := &pb.Snowflake{}
+	conf := &pb.EonId{}
 	config := runtime.GetConfig()
 	if config != nil {
 		// Load protobuf configuration using the config prefix
 		if err := config.Value(ConfPrefix).Scan(conf); err != nil {
 			// If config loading fails, use default values and log warning
 			log.NewHelper(p.logger).Warnf("failed to load snowflake configuration: %v, using defaults", err)
-			conf = &pb.Snowflake{
+			conf = &pb.EonId{
 				DatacenterId:               0,
 				WorkerId:                   0,
 				AutoRegisterWorkerId:       true,

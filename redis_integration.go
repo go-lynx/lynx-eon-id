@@ -249,7 +249,7 @@ type RedisSnowflakePlugin struct {
 }
 
 // NewRedisSnowflakePlugin creates a new snowflake plugin with Redis integration
-func NewRedisSnowflakePlugin(config *pb.Snowflake, redisConfig *RedisIntegrationConfig) (*RedisSnowflakePlugin, error) {
+func NewRedisSnowflakePlugin(config *pb.EonId, redisConfig *RedisIntegrationConfig) (*RedisSnowflakePlugin, error) {
 	// Create Redis integration
 	redisIntegration, err := NewRedisIntegration(redisConfig)
 	if err != nil {

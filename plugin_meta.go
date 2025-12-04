@@ -2,10 +2,10 @@ package eonId
 
 // Plugin metadata
 const (
-	PluginName        = "snowflake"
+	PluginName        = "eon-id"
 	PluginVersion     = "1.0.0"
-	PluginDescription = "Snowflake ID generator plugin with clock drift protection and Redis-based worker ID management"
-	ConfPrefix        = "lynx.snowflake"
+	PluginDescription = "Eon-ID generator plugin with clock drift protection and Redis-based worker ID management"
+	ConfPrefix        = "lynx.eon-id"
 )
 
 // NewSnowflakeGenerator creates a new snowflake generator plugin instance

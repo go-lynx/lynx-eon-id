@@ -5,13 +5,13 @@ syntax = "proto3";
 package lynx.protobuf.plugin.eonId;
 
 // Set go_package for generated Go code
-option go_package = "github.com/go-lynx/lynx/plugins/eonId/conf;conf";
+option go_package = "github.com/go-lynx/lynx-eon-id/conf;conf";
 
 // Import Duration type from google/protobuf/duration.proto
 import "google/protobuf/duration.proto";
 
-// Define Snowflake configuration message type
-message snowflake {
+// Define Eon-ID configuration message type
+message eon_id {
   // —— Basic Configuration ——
   // Data center ID (0-31)
   int32 datacenter_id = 1;
@@ -58,3 +58,4 @@ message snowflake {
   // Sequence bits (default: 12, range: 1-20)
   int32 sequence_bits = 18;
 }
+

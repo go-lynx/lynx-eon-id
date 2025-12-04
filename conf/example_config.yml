@@ -1,9 +1,9 @@
-# Snowflake ID Generator Plugin Configuration Example
-# This file demonstrates all available configuration options for the Lynx Snowflake plugin
+# Eon-ID Generator Plugin Configuration Example
+# This file demonstrates all available configuration options for the Lynx Eon-ID plugin
 
 lynx:
-  # Snowflake ID Generator Plugin Configuration
-  snowflake:
+  # Eon-ID Generator Plugin Configuration
+  eon-id:
     # —— Basic Configuration ——
     # Data center ID (0-31)
     datacenter_id: 1
@@ -15,7 +15,7 @@ lynx:
     auto_register_worker_id: true
     
     # Redis key prefix for worker ID registration
-    redis_key_prefix: "lynx:snowflake:worker"
+    redis_key_prefix: "lynx:eon-id:worker"
     
     # Worker ID registration TTL (default: 30s)
     worker_id_ttl: "30s"
@@ -69,11 +69,11 @@ lynx:
 
 # —— Production Environment Configuration Example ——
 # lynx:
-#   snowflake:
+#   eon-id:
 #     # Recommended production configuration
 #     datacenter_id: 1
 #     auto_register_worker_id: true
-#     redis_key_prefix: "prod:lynx:snowflake:worker"
+#     redis_key_prefix: "prod:lynx:eon-id:worker"
 #     worker_id_ttl: "60s"
 #     heartbeat_interval: "20s"
 #     
@@ -94,7 +94,7 @@ lynx:
 
 # —— Development Environment Configuration Example ——
 # lynx:
-#   snowflake:
+#   eon-id:
 #     # Simplified development configuration
 #     datacenter_id: 0
 #     worker_id: 1
@@ -109,11 +109,11 @@ lynx:
 
 # —— High Concurrency Scenario Configuration Example ——
 # lynx:
-#   snowflake:
+#   eon-id:
 #     # High concurrency optimization configuration
 #     datacenter_id: 2
 #     auto_register_worker_id: true
-#     redis_key_prefix: "hc:lynx:snowflake:worker"
+#     redis_key_prefix: "hc:lynx:eon-id:worker"
 #     worker_id_ttl: "120s"
 #     heartbeat_interval: "30s"
 #     
@@ -149,6 +149,6 @@ lynx:
 #     pool_size: 10
 #     min_idle_conns: 5
 #   
-#   snowflake:
+#   eon-id:
 #     redis_plugin_name: "default"  # Corresponds to the Redis configuration above
 #     auto_register_worker_id: true
