@@ -14,7 +14,7 @@ import (
 	pb "github.com/go-lynx/lynx-eon-id/conf"
 )
 
-// PlugSnowflake represents a Snowflake ID generator plugin instance
+// PlugSnowflake represents an Eon-ID (Snowflake-style) generator plugin instance
 type PlugSnowflake struct {
 	// Inherits from base plugin
 	*plugins.BasePlugin
@@ -26,16 +26,12 @@ type PlugSnowflake struct {
 	workerManager *WorkerIDManager
 	// ID generator
 	generator *Generator
-	// Metrics collection
-	metrics *Metrics
-	// Security manager
-	securityManager *SecurityManager
 	// Shutdown channel
 	shutdownCh chan struct{}
 	// Ensure shutdown channel is closed only once
 	shutdownOnce sync.Once
-	// Wait group for goroutines
-	wg sync.WaitGroup
+	// Ensure stop/cleanup logic runs only once (Stop and CleanupTasks are idempotent)
+	stopCleanupOnce sync.Once
 	// Mutex for thread safety
 	mu sync.RWMutex
 	// Plugin runtime
@@ -68,7 +64,7 @@ type WorkerIDManager struct {
 	mu sync.RWMutex
 }
 
-// Generator generates snowflake IDs
+// Generator produces 64-bit Snowflake-style unique IDs (Eon-ID).
 type Generator struct {
 	// Configuration
 	datacenterID int64
@@ -117,7 +113,7 @@ type Generator struct {
 	mu sync.Mutex
 }
 
-// Metrics collects detailed metrics for the snowflake generator
+// Metrics holds detailed metrics for the Eon-ID generator.
 type Metrics struct {
 	// ID generation metrics
 	IDsGenerated      int64
@@ -226,7 +222,8 @@ const (
 	DefaultEpoch            = 1609459200000 // 2021-01-01 00:00:00 UTC in milliseconds
 	DefaultMaxClockBackward = 5000          // 5 seconds in milliseconds
 
-	DefaultRedisKeyPrefix    = "eon-id:"
+	// DefaultRedisKeyPrefix is the Redis worker registration key prefix; should end with ":"
+	DefaultRedisKeyPrefix    = "lynx:eon-id:"
 	DefaultWorkerIDTTL       = 30 * time.Second
 	DefaultHeartbeatInterval = 10 * time.Second
 )
@@ -242,7 +239,7 @@ const (
 	// DefaultSequenceCacheSize Default cache size
 	DefaultSequenceCacheSize = 1000
 
-	// WorkerIDLockKey Redis key patterns
+	// WorkerIDLockKey / WorkerIDRegistryKey follow DefaultRedisKeyPrefix naming; reserved for future use
 	WorkerIDLockKey     = "lynx:eon-id:lock:worker_id"
 	WorkerIDRegistryKey = "lynx:eon-id:registry"
 
@@ -261,14 +258,14 @@ func NewSnowflakePlugin() *PlugSnowflake {
 
 // Plugin interface implementation
 
-// ID returns the plugin ID
+// ID returns the plugin ID (same as PluginName for framework lookup).
 func (p *PlugSnowflake) ID() string {
-	return "snowflake"
+	return PluginName
 }
 
 // Description returns the plugin description
 func (p *PlugSnowflake) Description() string {
-	return "Snowflake ID generator plugin for distributed unique ID generation"
+	return "Eon-ID generator plugin for distributed unique ID generation"
 }
 
 // Weight returns the plugin weight for loading order
@@ -284,7 +281,7 @@ func (p *PlugSnowflake) UpdateConfiguration(config interface{}) error {
 		p.conf = conf
 		return nil
 	}
-	return fmt.Errorf("invalid configuration type for snowflake plugin")
+	return fmt.Errorf("invalid configuration type for eon-id plugin")
 }
 
 // Lifecycle interface implementation
@@ -347,11 +344,8 @@ func (p *PlugSnowflake) Initialize(plugin plugins.Plugin, runtime plugins.Runtim
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Initialize worker manager with proper configuration
-	keyPrefix := conf.RedisKeyPrefix
-	if keyPrefix == "" {
-		keyPrefix = DefaultRedisKeyPrefix
-	}
+	// Initialize worker manager; key prefix is normalized to match lynx:eon-id naming.
+	keyPrefix := NormalizeKeyPrefix(conf.RedisKeyPrefix)
 
 	ttl := DefaultWorkerIDTTL
 	if conf.WorkerIdTtl != nil {
@@ -375,14 +369,15 @@ func (p *PlugSnowflake) Initialize(plugin plugins.Plugin, runtime plugins.Runtim
 	// Initialize generator with proper configuration
 	generatorConfig := &GeneratorConfig{
 		CustomEpoch:                conf.CustomEpoch,
-		DatacenterIDBits:           DefaultDatacenterBits, // Fixed to 5 bits for datacenter ID (0-31)
+		DatacenterIDBits:           DefaultDatacenterBits,
 		WorkerIDBits:               int(conf.WorkerIdBits),
 		SequenceBits:               int(conf.SequenceBits),
 		EnableClockDriftProtection: conf.EnableClockDriftProtection,
-		MaxClockDrift:              time.Duration(5 * time.Second), // Default value
+		MaxClockDrift:              time.Duration(5 * time.Second),
 		ClockDriftAction:           conf.ClockDriftAction,
 		EnableSequenceCache:        conf.EnableSequenceCache,
 		SequenceCacheSize:          int(conf.SequenceCacheSize),
+		EnableMetrics:              conf.EnableMetrics,
 	}
 
 	// Set default values if not specified
@@ -398,6 +393,9 @@ func (p *PlugSnowflake) Initialize(plugin plugins.Plugin, runtime plugins.Runtim
 	if generatorConfig.SequenceCacheSize == 0 {
 		generatorConfig.SequenceCacheSize = 1000
 	}
+	if generatorConfig.ClockDriftAction == "" {
+		generatorConfig.ClockDriftAction = ClockDriftActionWait
+	}
 
 	// Handle clock drift configuration
 	if conf.MaxClockDrift != nil {
@@ -407,12 +405,7 @@ func (p *PlugSnowflake) Initialize(plugin plugins.Plugin, runtime plugins.Runtim
 	var err error
 	p.generator, err = NewSnowflakeGeneratorCore(int64(conf.DatacenterId), int64(conf.WorkerId), generatorConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create snowflake generator: %w", err)
-	}
-
-	// Initialize metrics
-	p.metrics = &Metrics{
-		StartTime: time.Now(),
+		return fmt.Errorf("failed to create eon-id generator: %w", err)
 	}
 
 	return nil
@@ -429,38 +422,11 @@ func (p *PlugSnowflake) Start(plugin plugins.Plugin) error {
 	return nil
 }
 
-// Stop stops the plugin
+// Stop stops the plugin (idempotent with CleanupTasks via stopCleanupOnce).
 func (p *PlugSnowflake) Stop(plugin plugins.Plugin) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.shutdownOnce.Do(func() { close(p.shutdownCh) })
 
-	// Signal shutdown - use sync.Once to ensure idempotent closure
-	p.shutdownOnce.Do(func() {
-		close(p.shutdownCh)
-	})
-
-	// Stop worker manager heartbeat and unregister
-	if p.workerManager != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := p.workerManager.UnregisterWorkerID(ctx); err != nil {
-			log.NewHelper(p.logger).Warnf("failed to unregister worker ID during stop: %v", err)
-		}
-	}
-
-	// Shutdown generator
-	if p.generator != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := p.generator.Shutdown(ctx); err != nil {
-			log.NewHelper(p.logger).Warnf("failed to shutdown generator: %v", err)
-		}
-	}
-
-	// Wait for goroutines to finish
-	p.wg.Wait()
-
+	p.stopCleanupOnce.Do(p.doStopCleanup)
 	return nil
 }
 
@@ -543,25 +509,20 @@ func (p *PlugSnowflake) StartupTasks() error {
 	return nil
 }
 
-// CleanupTasks performs cleanup tasks
-func (p *PlugSnowflake) CleanupTasks() error {
+// doStopCleanup runs shutdown logic once; shared by Stop and CleanupTasks via stopCleanupOnce.
+func (p *PlugSnowflake) doStopCleanup() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Unregister worker ID if registered
 	if p.workerManager != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
 		if err := p.workerManager.UnregisterWorkerID(ctx); err != nil {
-			log.NewHelper(p.logger).Warnf("failed to unregister worker ID during cleanup: %v", err)
-			// Don't return error, as this is cleanup
+			log.NewHelper(p.logger).Warnf("failed to unregister worker ID: %v", err)
 		} else {
-			log.NewHelper(p.logger).Infof("unregistered worker ID during cleanup")
+			log.NewHelper(p.logger).Infof("unregistered worker ID")
 		}
 	}
-
-	// Shutdown generator
 	if p.generator != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -569,7 +530,12 @@ func (p *PlugSnowflake) CleanupTasks() error {
 			log.NewHelper(p.logger).Warnf("failed to shutdown generator: %v", err)
 		}
 	}
+}
 
+// CleanupTasks performs cleanup (idempotent with Stop via doStopCleanup).
+func (p *PlugSnowflake) CleanupTasks() error {
+	p.shutdownOnce.Do(func() { close(p.shutdownCh) })
+	p.stopCleanupOnce.Do(p.doStopCleanup)
 	return nil
 }
 
@@ -579,48 +545,80 @@ func (p *PlugSnowflake) CheckHealth() error {
 	defer p.mu.RUnlock()
 
 	if p.generator == nil {
-		return fmt.Errorf("snowflake generator not initialized")
+		return fmt.Errorf("eon-id generator not initialized")
 	}
 
 	return nil
 }
 
-// GetHealth implements the HealthCheck interface
+// GetHealth implements the HealthCheck interface (minimizes lock hold; Redis Ping runs outside lock).
 func (p *PlugSnowflake) GetHealth() plugins.HealthReport {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	generator := p.generator
+	redisClient := p.redisClient
+	workerManager := p.workerManager
+	conf := p.conf
 
 	status := "healthy"
 	details := make(map[string]any)
-	message := "Snowflake ID generator is operating normally"
+	message := "Eon-ID generator is operating normally"
 
-	// Check generator status
-	if p.generator == nil {
+	if generator == nil {
 		status = "unhealthy"
-		message = "Snowflake generator not initialized"
+		message = "Eon-ID generator not initialized"
 		details["generator_status"] = "not_initialized"
 	} else {
 		details["generator_status"] = "initialized"
-		details["worker_id"] = p.generator.workerID
-		details["datacenter_id"] = p.generator.datacenterID
-		details["custom_epoch"] = p.generator.customEpoch
-		details["generated_count"] = atomic.LoadInt64(&p.generator.generatedCount)
-		details["clock_backward_count"] = atomic.LoadInt64(&p.generator.clockBackwardCount)
-		details["is_shutting_down"] = p.generator.isShuttingDown
-
-		// Check for clock drift issues
-		if p.generator.clockBackwardCount > 0 {
+		details["worker_id"] = generator.workerID
+		details["datacenter_id"] = generator.datacenterID
+		details["custom_epoch"] = generator.customEpoch
+		details["generated_count"] = atomic.LoadInt64(&generator.generatedCount)
+		details["clock_backward_count"] = atomic.LoadInt64(&generator.clockBackwardCount)
+		details["is_shutting_down"] = generator.isShuttingDown
+		if atomic.LoadInt64(&generator.clockBackwardCount) > 0 {
 			status = "degraded"
 			message = "Clock backward events detected"
 		}
 	}
+	if workerManager != nil {
+		details["worker_manager_status"] = "active"
+		details["worker_manager_worker_id"] = workerManager.workerID
+		details["worker_manager_datacenter_id"] = workerManager.datacenterID
+		details["worker_manager_key_prefix"] = workerManager.keyPrefix
+		details["worker_manager_ttl"] = workerManager.ttl.String()
+		details["worker_manager_heartbeat_interval"] = workerManager.heartbeatInterval.String()
+	} else {
+		details["worker_manager_status"] = "not_configured"
+	}
+	if conf != nil {
+		details["configuration"] = map[string]any{
+			"datacenter_id":           conf.DatacenterId,
+			"worker_id":               conf.WorkerId,
+			"custom_epoch":            conf.CustomEpoch,
+			"auto_register_worker_id": conf.AutoRegisterWorkerId,
+			"redis_plugin_name":       conf.RedisPluginName,
+			"redis_key_prefix":        conf.RedisKeyPrefix,
+			"worker_id_ttl":           conf.WorkerIdTtl,
+			"heartbeat_interval":      conf.HeartbeatInterval,
+			"enable_metrics":          conf.EnableMetrics,
+			"clock_drift_protection":  conf.EnableClockDriftProtection,
+			"sequence_cache":          conf.EnableSequenceCache,
+			"max_clock_drift":         conf.MaxClockDrift,
+			"clock_check_interval":    conf.ClockCheckInterval,
+			"clock_drift_action":      conf.ClockDriftAction,
+			"sequence_cache_size":     conf.SequenceCacheSize,
+			"redis_db":                conf.RedisDb,
+			"worker_id_bits":          conf.WorkerIdBits,
+			"sequence_bits":           conf.SequenceBits,
+		}
+	}
+	p.mu.RUnlock()
 
-	// Check Redis connection status
-	if p.redisClient != nil {
+	// Run Redis Ping outside lock to avoid blocking other callers.
+	if redisClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-
-		if err := p.redisClient.Ping(ctx).Err(); err != nil {
+		if err := redisClient.Ping(ctx).Err(); err != nil {
 			if status == "healthy" {
 				status = "degraded"
 			}
@@ -634,71 +632,38 @@ func (p *PlugSnowflake) GetHealth() plugins.HealthReport {
 		details["redis_status"] = "not_configured"
 	}
 
-	// Check worker manager status
-	if p.workerManager != nil {
-		details["worker_manager_status"] = "active"
-		details["worker_manager_worker_id"] = p.workerManager.workerID
-		details["worker_manager_datacenter_id"] = p.workerManager.datacenterID
-		details["worker_manager_key_prefix"] = p.workerManager.keyPrefix
-		details["worker_manager_ttl"] = p.workerManager.ttl.String()
-		details["worker_manager_heartbeat_interval"] = p.workerManager.heartbeatInterval.String()
-	} else {
-		details["worker_manager_status"] = "not_configured"
-	}
-
-	// Add metrics information if available
-	if p.metrics != nil {
-		p.metrics.mu.RLock()
-		details["metrics"] = map[string]any{
-			"ids_generated":        p.metrics.IDsGenerated,
-			"clock_drift_events":   p.metrics.ClockDriftEvents,
-			"worker_id_conflicts":  p.metrics.WorkerIDConflicts,
-			"sequence_overflows":   p.metrics.SequenceOverflows,
-			"generation_errors":    p.metrics.GenerationErrors,
-			"redis_errors":         p.metrics.RedisErrors,
-			"timeout_errors":       p.metrics.TimeoutErrors,
-			"validation_errors":    p.metrics.ValidationErrors,
-			"id_generation_rate":   p.metrics.IDGenerationRate,
-			"peak_generation_rate": p.metrics.PeakGenerationRate,
-			"uptime_duration":      p.metrics.UptimeDuration.String(),
-			"last_generation_time": p.metrics.LastGenerationTime.Format(time.RFC3339),
-		}
-		p.metrics.mu.RUnlock()
-
-		// Check for high error rates
-		totalOperations := p.metrics.IDsGenerated + p.metrics.GenerationErrors
-		if totalOperations > 0 {
-			errorRate := float64(p.metrics.GenerationErrors) / float64(totalOperations)
-			details["error_rate"] = errorRate
-
-			if errorRate > 0.1 { // More than 10% error rate
-				status = "degraded"
-				message = "High error rate detected"
+	// Read metrics outside lock (generator ref already copied; GetSnapshot uses its own lock).
+	if generator != nil {
+		genMetrics := generator.GetMetrics()
+		if genMetrics != nil {
+			snap := genMetrics.GetSnapshot()
+			lastGenStr := ""
+			if !snap.LastGenerationTime.IsZero() {
+				lastGenStr = snap.LastGenerationTime.Format(time.RFC3339)
 			}
-		}
-	}
-
-	// Add configuration information
-	if p.conf != nil {
-		details["configuration"] = map[string]any{
-			"datacenter_id":           p.conf.DatacenterId,
-			"worker_id":               p.conf.WorkerId,
-			"custom_epoch":            p.conf.CustomEpoch,
-			"auto_register_worker_id": p.conf.AutoRegisterWorkerId,
-			"redis_plugin_name":       p.conf.RedisPluginName,
-			"redis_key_prefix":        p.conf.RedisKeyPrefix,
-			"worker_id_ttl":           p.conf.WorkerIdTtl,
-			"heartbeat_interval":      p.conf.HeartbeatInterval,
-			"enable_metrics":          p.conf.EnableMetrics,
-			"clock_drift_protection":  p.conf.EnableClockDriftProtection,
-			"sequence_cache":          p.conf.EnableSequenceCache,
-			"max_clock_drift":         p.conf.MaxClockDrift,
-			"clock_check_interval":    p.conf.ClockCheckInterval,
-			"clock_drift_action":      p.conf.ClockDriftAction,
-			"sequence_cache_size":     p.conf.SequenceCacheSize,
-			"redis_db":                p.conf.RedisDb,
-			"worker_id_bits":          p.conf.WorkerIdBits,
-			"sequence_bits":           p.conf.SequenceBits,
+			details["metrics"] = map[string]any{
+				"ids_generated":        snap.IDsGenerated,
+				"clock_drift_events":   snap.ClockDriftEvents,
+				"worker_id_conflicts":  snap.WorkerIDConflicts,
+				"sequence_overflows":   snap.SequenceOverflows,
+				"generation_errors":    snap.GenerationErrors,
+				"redis_errors":         snap.RedisErrors,
+				"timeout_errors":       snap.TimeoutErrors,
+				"validation_errors":    snap.ValidationErrors,
+				"id_generation_rate":   snap.IDGenerationRate,
+				"peak_generation_rate": snap.PeakGenerationRate,
+				"uptime_duration":      snap.UptimeDuration.String(),
+				"last_generation_time": lastGenStr,
+			}
+			totalOperations := snap.IDsGenerated + snap.GenerationErrors
+			if totalOperations > 0 {
+				errorRate := float64(snap.GenerationErrors) / float64(totalOperations)
+				details["error_rate"] = errorRate
+				if errorRate > 0.1 {
+					status = "degraded"
+					message = "High error rate detected"
+				}
+			}
 		}
 	}
 
@@ -712,18 +677,23 @@ func (p *PlugSnowflake) GetHealth() plugins.HealthReport {
 
 // DependencyAware interface implementation
 
-// GetDependencies returns plugin dependencies
+// GetDependencies returns plugin dependencies (Redis declared only when auto-register enabled; ID matches redis_plugin_name).
 func (p *PlugSnowflake) GetDependencies() []plugins.Dependency {
 	var deps []plugins.Dependency
-	if p.conf.RedisPluginName != "" {
-		deps = append(deps, plugins.Dependency{
-			ID:          "redis",
-			Name:        "Redis",
-			Type:        plugins.DependencyTypeOptional,
-			Required:    false,
-			Description: "Redis client for worker ID management",
-		})
+	if p.conf == nil || !p.conf.AutoRegisterWorkerId {
+		return deps
 	}
+	name := p.conf.RedisPluginName
+	if name == "" {
+		name = "redis"
+	}
+	deps = append(deps, plugins.Dependency{
+		ID:          name,
+		Name:        "Redis",
+		Type:        plugins.DependencyTypeOptional,
+		Required:    false,
+		Description: "Redis client for worker ID management",
+	})
 	return deps
 }
 
@@ -740,7 +710,7 @@ func (p *PlugSnowflake) GenerateID() (int64, error) {
 	p.mu.RUnlock()
 
 	if generator == nil {
-		return 0, fmt.Errorf("snowflake generator not initialized")
+		return 0, fmt.Errorf("eon-id generator not initialized")
 	}
 
 	// Check worker manager health to prevent ID duplication

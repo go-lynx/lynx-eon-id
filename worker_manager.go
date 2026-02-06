@@ -15,6 +15,20 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// redisResultToInt64 converts Redis Lua script result to int64 to avoid panic when the client returns float64.
+func redisResultToInt64(v interface{}) (int64, error) {
+	switch n := v.(type) {
+	case int64:
+		return n, nil
+	case float64:
+		return int64(n), nil
+	case int:
+		return int64(n), nil
+	default:
+		return 0, fmt.Errorf("unexpected Lua result type: %T", v)
+	}
+}
+
 // getLocalIP returns the local IP address of the machine
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
@@ -85,7 +99,10 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 		if err != nil {
 			return -1, fmt.Errorf("failed to execute INCR script: %w", err)
 		}
-		seq := result.(int64)
+		seq, err := redisResultToInt64(result)
+		if err != nil {
+			return -1, fmt.Errorf("INCR script result: %w", err)
+		}
 
 		// 2. workerID = seq - 1 (0-based)
 		workerID := seq - 1
@@ -226,7 +243,7 @@ func (w *WorkerIDManager) heartbeatLoop(ctx context.Context) {
 		case <-ticker.C:
 			if err := w.sendHeartbeat(); err != nil {
 				consecutiveFailures++
-				log.Warnf("snowflake worker heartbeat failed (attempt %d/%d): %v",
+				log.Warnf("eon-id worker heartbeat failed (attempt %d/%d): %v",
 					consecutiveFailures, maxConsecutiveFailures, err)
 
 				// Mark as unhealthy after first failure to prevent ID generation
@@ -236,7 +253,7 @@ func (w *WorkerIDManager) heartbeatLoop(ctx context.Context) {
 
 				// If too many failures, try to re-register
 				if consecutiveFailures >= maxConsecutiveFailures {
-					log.Errorf("snowflake worker heartbeat failed %d times, attempting re-registration",
+					log.Errorf("eon-id worker heartbeat failed %d times, attempting re-registration",
 						consecutiveFailures)
 
 					// Try to re-register the same worker ID
@@ -251,7 +268,7 @@ func (w *WorkerIDManager) heartbeatLoop(ctx context.Context) {
 			} else {
 				// Reset failure counter and mark healthy on success
 				if consecutiveFailures > 0 {
-					log.Infof("snowflake worker heartbeat recovered after %d failures", consecutiveFailures)
+					log.Infof("eon-id worker heartbeat recovered after %d failures", consecutiveFailures)
 					consecutiveFailures = 0
 				}
 				atomic.StoreInt32(&w.healthy, 1)
@@ -328,7 +345,10 @@ func (w *WorkerIDManager) sendHeartbeat() error {
 		return fmt.Errorf("heartbeat script execution failed: %w", err)
 	}
 
-	code := result.(int64)
+	code, err := redisResultToInt64(result)
+	if err != nil {
+		return fmt.Errorf("heartbeat script result: %w", err)
+	}
 	switch code {
 	case 1:
 		return nil // Success
@@ -427,7 +447,18 @@ func (w *WorkerIDManager) GetRegisteredWorkers(ctx context.Context) ([]WorkerInf
 	return workers, nil
 }
 
-// Helper methods
+// NormalizeKeyPrefix ensures the key prefix ends with ":" or "_" for dc/worker/registry concatenation; aligns with DefaultRedisKeyPrefix.
+func NormalizeKeyPrefix(prefix string) string {
+	if prefix == "" {
+		return DefaultRedisKeyPrefix
+	}
+	if last := prefix[len(prefix)-1]; last != ':' && last != '_' {
+		return prefix + ":"
+	}
+	return prefix
+}
+
+// Helper methods (keyPrefix is normalized via NormalizeKeyPrefix at creation time)
 func (w *WorkerIDManager) getWorkerKey(workerID int64) string {
 	return fmt.Sprintf("%sdc:%d:worker:%d", w.keyPrefix, w.datacenterID, workerID)
 }

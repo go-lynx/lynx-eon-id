@@ -2,57 +2,31 @@ package eonId
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/go-lynx/lynx"
-	"github.com/go-lynx/lynx/pkg/factory"
 )
 
-var (
-	// fallbackPlugin is used when PluginManager is not available
-	fallbackPlugin     *PlugSnowflake
-	fallbackPluginOnce sync.Once
-	fallbackPluginErr  error
-)
-
-// GetSnowflakePlugin retrieves the snowflake plugin from the application
+// GetSnowflakePlugin returns the eon-id plugin instance from the Lynx app (only available after the plugin is initialized and started).
 func GetSnowflakePlugin() (*PlugSnowflake, error) {
-	// Try to get from application plugin manager first
-	if lynx.Lynx() != nil && lynx.Lynx().GetPluginManager() != nil {
-		plugin := lynx.Lynx().GetPluginManager().GetPlugin(PluginName)
-		if plugin != nil {
-			if snowflakePlugin, ok := plugin.(*PlugSnowflake); ok {
-				return snowflakePlugin, nil
-			}
-			return nil, fmt.Errorf("plugin '%s' is not a snowflake plugin", PluginName)
-		}
+	if lynx.Lynx() == nil {
+		return nil, fmt.Errorf("lynx application not initialized")
 	}
-
-	// Fallback to factory with singleton pattern
-	fallbackPluginOnce.Do(func() {
-		plugin, err := factory.GlobalTypedFactory().CreatePlugin(PluginName)
-		if err != nil {
-			fallbackPluginErr = fmt.Errorf("snowflake plugin not found: %w", err)
-			return
-		}
-
-		snowflakePlugin, ok := plugin.(*PlugSnowflake)
-		if !ok {
-			fallbackPluginErr = fmt.Errorf("plugin is not a snowflake plugin instance")
-			return
-		}
-
-		fallbackPlugin = snowflakePlugin
-	})
-
-	if fallbackPluginErr != nil {
-		return nil, fallbackPluginErr
+	pm := lynx.Lynx().GetPluginManager()
+	if pm == nil {
+		return nil, fmt.Errorf("plugin manager not available")
 	}
-
-	return fallbackPlugin, nil
+	plugin := pm.GetPlugin(PluginName)
+	if plugin == nil {
+		return nil, fmt.Errorf("plugin %s not found", PluginName)
+	}
+	snowflakePlugin, ok := plugin.(*PlugSnowflake)
+	if !ok {
+		return nil, fmt.Errorf("plugin %s is not eon-id plugin", PluginName)
+	}
+	return snowflakePlugin, nil
 }
 
-// GenerateID generates a new snowflake ID using the global plugin instance
+// GenerateID generates a new unique ID using the global eon-id plugin.
 func GenerateID() (int64, error) {
 	plugin, err := GetSnowflakePlugin()
 	if err != nil {
@@ -62,7 +36,7 @@ func GenerateID() (int64, error) {
 	return plugin.GenerateID()
 }
 
-// GenerateIDWithMetadata generates a new snowflake ID with metadata using the global plugin instance
+// GenerateIDWithMetadata generates an ID with metadata using the global eon-id plugin.
 func GenerateIDWithMetadata() (int64, *SID, error) {
 	plugin, err := GetSnowflakePlugin()
 	if err != nil {
@@ -72,7 +46,7 @@ func GenerateIDWithMetadata() (int64, *SID, error) {
 	return plugin.GenerateIDWithMetadata()
 }
 
-// ParseID parses a snowflake ID and returns its metadata using the global plugin instance
+// ParseID parses an ID and returns its metadata using the global eon-id plugin.
 func ParseID(id int64) (*SID, error) {
 	plugin, err := GetSnowflakePlugin()
 	if err != nil {
@@ -82,7 +56,7 @@ func ParseID(id int64) (*SID, error) {
 	return plugin.ParseID(id)
 }
 
-// GetGenerator returns the snowflake generator instance from the global plugin
+// GetGenerator returns the underlying Generator instance from the global plugin.
 func GetGenerator() (*Generator, error) {
 	plugin, err := GetSnowflakePlugin()
 	if err != nil {
@@ -91,13 +65,13 @@ func GetGenerator() (*Generator, error) {
 
 	generator := plugin.GetGenerator()
 	if generator == nil {
-		return nil, fmt.Errorf("snowflake generator is not initialized")
+		return nil, fmt.Errorf("eon-id generator is not initialized")
 	}
 
 	return generator, nil
 }
 
-// CheckHealth checks the health of the snowflake plugin
+// CheckHealth checks the health of the eon-id plugin.
 func CheckHealth() error {
 	plugin, err := GetSnowflakePlugin()
 	if err != nil {

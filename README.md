@@ -15,7 +15,7 @@ A high-performance, distributed unique ID generator plugin based on the Twitter 
 ## 📦 Installation
 
 ```bash
-go get github.com/go-lynx/lynx/plugins/eon-id
+go get github.com/go-lynx/lynx-eon-id
 ```
 
 ## 🚀 Quick Start
@@ -29,17 +29,19 @@ lynx:
   eon-id:
     datacenter_id: 1
     auto_register_worker_id: true
-    redis_key_prefix: "lynx:eon-id:worker"
+    redis_key_prefix: "lynx:eon-id:"
     worker_id_ttl: "30s"
     heartbeat_interval: "10s"
     enable_clock_drift_protection: true
     enable_sequence_cache: true
     sequence_cache_size: 1000
     enable_metrics: true
-    redis_plugin_name: "default"
+    redis_plugin_name: "redis"
 ```
 
 ### 2. Usage
+
+推荐使用包级方法（需在 Lynx 启动并完成插件初始化后调用）：
 
 ```go
 package main
@@ -47,33 +49,29 @@ package main
 import (
     "fmt"
     
-    eonid "github.com/go-lynx/lynx/plugins/eon-id"
+    eonid "github.com/go-lynx/lynx-eon-id"
 )
 
 func main() {
-    // Get Eon-ID generator instance
-    generator := eonid.GetSnowflakeGenerator()
-    if generator == nil {
-        panic("eon-id generator not initialized")
-    }
-    
-    // Generate unique ID
-    id, err := generator.GenerateID()
+    // 方式一：包级生成（推荐）
+    id, err := eonid.GenerateID()
     if err != nil {
         panic(err)
     }
     fmt.Printf("Generated ID: %d\n", id)
     
-    // Generate ID with metadata
-    id, metadata, err := generator.GenerateIDWithMetadata()
+    // 方式二：获取插件实例后调用
+    plugin, err := eonid.GetSnowflakePlugin()
     if err != nil {
         panic(err)
     }
-    fmt.Printf("ID: %d, Timestamp: %v, WorkerID: %d\n", 
-        id, metadata.Timestamp, metadata.WorkerID)
+    id, metadata, err := plugin.GenerateIDWithMetadata()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("ID: %d, Timestamp: %v, WorkerID: %d\n", id, metadata.Timestamp, metadata.WorkerID)
     
-    // Parse existing ID
-    parsed, err := generator.ParseID(id)
+    parsed, err := plugin.ParseID(id)
     if err != nil {
         panic(err)
     }
@@ -91,7 +89,7 @@ func main() {
 | `datacenter_id` | int | 1 | Datacenter ID (0-31) |
 | `worker_id` | int | 0 | Worker ID, auto-registered if not set |
 | `auto_register_worker_id` | bool | true | Enable Redis-based auto Worker ID registration |
-| `redis_key_prefix` | string | "eon-id:" | Redis key prefix |
+| `redis_key_prefix` | string | "lynx:eon-id:" | Redis key prefix（建议以 ":" 结尾，未结尾时自动补全） |
 | `worker_id_ttl` | duration | 30s | Worker ID registration TTL |
 | `heartbeat_interval` | duration | 10s | Heartbeat interval |
 
@@ -119,7 +117,7 @@ func main() {
 | `custom_epoch` | int64 | 1609459200000 | Custom epoch timestamp (milliseconds) |
 | `worker_id_bits` | int | 5 | Worker ID bits (1-20) |
 | `sequence_bits` | int | 12 | Sequence bits (1-20) |
-| `redis_plugin_name` | string | "redis" | Redis plugin name |
+| `redis_plugin_name` | string | "redis" | Redis 插件名（需与框架注册名一致） |
 | `redis_db` | int | 0 | Redis database number |
 
 ## 🏗️ ID Structure
@@ -148,7 +146,7 @@ lynx:
   eon-id:
     datacenter_id: 1
     auto_register_worker_id: true
-    redis_key_prefix: "prod:lynx:eon-id:worker"
+    redis_key_prefix: "prod:lynx:eon-id:"
     worker_id_ttl: "60s"
     heartbeat_interval: "20s"
     enable_clock_drift_protection: true
@@ -205,8 +203,11 @@ This ensures IDs generated from different datacenters will never conflict.
 The plugin provides detailed health check reports:
 
 ```go
-generator := eonid.GetSnowflakeGenerator()
-health := generator.GetHealth()
+plugin, err := eonid.GetSnowflakePlugin()
+if err != nil {
+    panic(err)
+}
+health := plugin.GetHealth()
 
 fmt.Printf("Status: %s\n", health.Status)
 fmt.Printf("Message: %s\n", health.Message)

@@ -14,8 +14,8 @@ lynx:
     # Enable auto worker ID registration via Redis
     auto_register_worker_id: true
     
-    # Redis key prefix for worker ID registration
-    redis_key_prefix: "lynx:eon-id:worker"
+    # Redis key prefix for worker ID registration（建议以 ":" 结尾，未结尾时代码会自动补全）
+    redis_key_prefix: "lynx:eon-id:"
     
     # Worker ID registration TTL (default: 30s)
     worker_id_ttl: "30s"
@@ -50,19 +50,19 @@ lynx:
     enable_metrics: true
     
     # —— Redis Integration Configuration ——
-    # Redis plugin name for worker ID registration
-    redis_plugin_name: "default"
+    # Redis plugin name for worker ID registration（需与框架中注册的 Redis 插件名一致）
+    redis_plugin_name: "redis"
     
     # Redis database for worker ID registration
     redis_db: 0
     
     # —— Advanced Configuration ——
-    # Custom epoch timestamp (default: 2023-01-01 00:00:00 UTC)
-    # 1672531200000 = 2023-01-01 00:00:00 UTC
-    custom_epoch: 1672531200000
+    # Custom epoch timestamp (default: 2021-01-01 00:00:00 UTC，与代码 DefaultEpoch 一致)
+    # 1609459200000 = 2021-01-01 00:00:00 UTC
+    custom_epoch: 1609459200000
     
-    # Worker ID bits (default: 10, range: 1-20)
-    worker_id_bits: 10
+    # Worker ID bits (default: 5, range: 1-20)
+    worker_id_bits: 5
     
     # Sequence bits (default: 12, range: 1-20)
     sequence_bits: 12
@@ -73,7 +73,7 @@ lynx:
 #     # Recommended production configuration
 #     datacenter_id: 1
 #     auto_register_worker_id: true
-#     redis_key_prefix: "prod:lynx:eon-id:worker"
+#     redis_key_prefix: "prod:lynx:eon-id:"
 #     worker_id_ttl: "60s"
 #     heartbeat_interval: "20s"
 #     
@@ -113,7 +113,7 @@ lynx:
 #     # High concurrency optimization configuration
 #     datacenter_id: 2
 #     auto_register_worker_id: true
-#     redis_key_prefix: "hc:lynx:eon-id:worker"
+#     redis_key_prefix: "hc:lynx:eon-id:"
 #     worker_id_ttl: "120s"
 #     heartbeat_interval: "30s"
 #     
@@ -150,5 +150,5 @@ lynx:
 #     min_idle_conns: 5
 #   
 #   eon-id:
-#     redis_plugin_name: "default"  # Corresponds to the Redis configuration above
+#     redis_plugin_name: "redis"  # 与上方 Redis 配置的插件名一致
 #     auto_register_worker_id: true

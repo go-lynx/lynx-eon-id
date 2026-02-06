@@ -67,10 +67,7 @@ func (c *RedisIntegrationConfig) Validate() error {
 		return fmt.Errorf("key prefix cannot contain Redis pattern characters (* or ?): %s", c.KeyPrefix)
 	}
 
-	// Ensure key prefix ends with separator for clarity
-	if !strings.HasSuffix(c.KeyPrefix, ":") && !strings.HasSuffix(c.KeyPrefix, "_") {
-		return fmt.Errorf("key prefix should end with ':' or '_' separator: %s", c.KeyPrefix)
-	}
+	// Prefix may omit trailing ":"; NormalizeKeyPrefix will add it when building keys.
 
 	return nil
 }
@@ -109,10 +106,10 @@ func (r *RedisIntegration) CreateWorkerManager(datacenterID int64, config *Worke
 		config = DefaultWorkerManagerConfig()
 	}
 
-	// Use the key prefix from Redis integration config if not specified
 	if config.KeyPrefix == "" {
 		config.KeyPrefix = r.config.KeyPrefix
 	}
+	config.KeyPrefix = NormalizeKeyPrefix(config.KeyPrefix)
 
 	return NewWorkerIDManager(r.client, datacenterID, config)
 }
@@ -241,14 +238,15 @@ func DefaultRedisIntegrationConfig() *RedisIntegrationConfig {
 	}
 }
 
-// RedisSnowflakePlugin represents a snowflake plugin with Redis integration
+// RedisSnowflakePlugin is the eon-id plugin with Redis integration, independent of the main Lynx runtime.
+// Use for standalone processes or tests; in production prefer registering eon-id via Lynx and getting Redis from runtime.GetSharedResource.
 type RedisSnowflakePlugin struct {
 	*PlugSnowflake
 	redisIntegration *RedisIntegration
 	workerManager    *WorkerIDManager
 }
 
-// NewRedisSnowflakePlugin creates a new snowflake plugin with Redis integration
+// NewRedisSnowflakePlugin creates a plugin instance with Redis (independent of Lynx; for standalone or test use only).
 func NewRedisSnowflakePlugin(config *pb.EonId, redisConfig *RedisIntegrationConfig) (*RedisSnowflakePlugin, error) {
 	// Create Redis integration
 	redisIntegration, err := NewRedisIntegration(redisConfig)

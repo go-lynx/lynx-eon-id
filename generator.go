@@ -9,25 +9,34 @@ import (
 	pb "github.com/go-lynx/lynx-eon-id/conf"
 )
 
-// NewSnowflakeGeneratorWithConfig creates a new snowflake ID generator with protobuf config
+// NewSnowflakeGeneratorWithConfig creates an Eon-ID generator from protobuf config.
 func NewSnowflakeGeneratorWithConfig(config *pb.EonId) (*Generator, error) {
+	maxClockDrift := DefaultMaxClockDrift
+	if config.MaxClockDrift != nil {
+		maxClockDrift = config.MaxClockDrift.AsDuration()
+	}
+	clockDriftAction := config.ClockDriftAction
+	if clockDriftAction == "" {
+		clockDriftAction = ClockDriftActionWait
+	}
 	// Convert protobuf config to internal config
 	internalConfig := &GeneratorConfig{
 		CustomEpoch:                config.CustomEpoch,
-		DatacenterIDBits:           5, // Fixed to 5 bits for datacenter ID (0-31)
+		DatacenterIDBits:           5,
 		WorkerIDBits:               int(config.WorkerIdBits),
 		SequenceBits:               int(config.SequenceBits),
 		EnableClockDriftProtection: config.EnableClockDriftProtection,
-		MaxClockDrift:              config.MaxClockDrift.AsDuration(),
-		ClockDriftAction:           ClockDriftActionWait,
+		MaxClockDrift:              maxClockDrift,
+		ClockDriftAction:           clockDriftAction,
 		EnableSequenceCache:        config.EnableSequenceCache,
 		SequenceCacheSize:          int(config.SequenceCacheSize),
+		EnableMetrics:              config.EnableMetrics,
 	}
 
 	return NewSnowflakeGeneratorCore(int64(config.DatacenterId), int64(config.WorkerId), internalConfig)
 }
 
-// NewSnowflakeGeneratorCore  creates a new snowflake generator
+// NewSnowflakeGeneratorCore creates the core Eon-ID generator instance.
 func NewSnowflakeGeneratorCore(datacenterID, workerID int64, config *GeneratorConfig) (*Generator, error) {
 	if config == nil {
 		config = DefaultGeneratorConfig()
@@ -88,8 +97,10 @@ func NewSnowflakeGeneratorCore(datacenterID, workerID int64, config *GeneratorCo
 		generator.cacheIndex = 0
 	}
 
-	// Initialize metrics
-	generator.metrics = NewSnowflakeMetrics()
+	// Initialize metrics only when enabled
+	if config.EnableMetrics {
+		generator.metrics = NewSnowflakeMetrics()
+	}
 
 	return generator, nil
 }
@@ -332,7 +343,7 @@ func (g *Generator) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// ParseID parses a snowflake ID and returns its components
+// ParseID parses a snowflake ID and returns its components; validates timestamp is within [epoch, epoch+41bit].
 func (g *Generator) ParseID(id int64) (*SID, error) {
 	if id < 0 {
 		return nil, fmt.Errorf("invalid snowflake ID: %d", id)
@@ -343,6 +354,13 @@ func (g *Generator) ParseID(id int64) (*SID, error) {
 	workerID := (id >> g.workerShift) & g.maxWorkerID
 	datacenterID := (id >> g.datacenterShift) & g.maxDatacenterID
 	timestamp := (id >> g.timestampShift) + g.customEpoch
+
+	// Timestamp must be in [epoch, epoch+41bit] to reject malicious or corrupted IDs
+	maxTimestamp := g.customEpoch + (1<<41 - 1)
+	if timestamp < g.customEpoch || timestamp > maxTimestamp {
+		return nil, fmt.Errorf("invalid snowflake ID: timestamp %d out of range [%d, %d]",
+			timestamp, g.customEpoch, maxTimestamp)
+	}
 
 	return &SID{
 		ID:           id,
@@ -414,6 +432,7 @@ type GeneratorConfig struct {
 	ClockDriftAction           string
 	EnableSequenceCache        bool
 	SequenceCacheSize          int
+	EnableMetrics              bool // when false, no metrics are created to reduce overhead
 }
 
 // DefaultGeneratorConfig returns default generator configuration
@@ -428,6 +447,7 @@ func DefaultGeneratorConfig() *GeneratorConfig {
 		ClockDriftAction:           ClockDriftActionWait,
 		EnableSequenceCache:        false,
 		SequenceCacheSize:          DefaultSequenceCacheSize,
+		EnableMetrics:              true,
 	}
 }
 

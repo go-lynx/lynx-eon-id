@@ -8,8 +8,7 @@ const (
 	ConfPrefix        = "lynx.eon-id"
 )
 
-// NewSnowflakeGenerator creates a new snowflake generator plugin instance
-// This is kept for backward compatibility
+// NewSnowflakeGenerator creates an eon-id plugin instance; kept for backward compatibility.
 func NewSnowflakeGenerator() *PlugSnowflake {
 	return NewSnowflakePlugin()
 }

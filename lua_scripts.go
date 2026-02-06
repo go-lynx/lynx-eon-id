@@ -1,22 +1,24 @@
 package eonId
 
-// Lua scripts for snowflake ID generator Redis operations
+// Lua scripts for eon-id Redis operations (worker ID counter, heartbeat)
 // All scripts are executed atomically by Redis
 
-// LuaScriptIncrWithReset atomically increments a counter and resets it if exceeds max
+// LuaScriptIncrWithReset atomically increments and wraps when exceeding max; returns value in [1, totalWorkerIDs] to avoid out-of-range workerID under concurrency.
 // KEYS[1]: counter key
-// ARGV[1]: max value (totalWorkerIDs)
-// Returns: the counter value (1 to max)
+// ARGV[1]: totalWorkerIDs (max worker ID + 1)
+// Returns: 1..totalWorkerIDs
 const LuaScriptIncrWithReset = `
+local total = tonumber(ARGV[1])
 local counter = redis.call('INCR', KEYS[1])
-if counter > tonumber(ARGV[1]) then
-    redis.call('SET', KEYS[1], '1')
-    return 1
+if counter > total then
+    local next_val = ((counter - 1) % total) + 1
+    redis.call('SET', KEYS[1], tostring(next_val))
+    return next_val
 end
 return counter
 `
 
-// LuaScriptHeartbeat atomically verifies instanceID and updates heartbeat
+// LuaScriptHeartbeat atomically verifies instance_id and refreshes TTL; uses cjson to parse JSON so values containing quotes do not break regex.
 // KEYS[1]: worker key
 // ARGV[1]: new worker info JSON
 // ARGV[2]: expected instanceID
@@ -27,11 +29,11 @@ local current = redis.call('GET', KEYS[1])
 if not current then
     return -1
 end
-local instanceId = string.match(current, '"instance_id":"([^"]+)"')
-if not instanceId then
+local ok, t = pcall(cjson.decode, current)
+if not ok or not t or type(t.instance_id) ~= 'string' then
     return -2
 end
-if instanceId ~= ARGV[2] then
+if t.instance_id ~= ARGV[2] then
     return 0
 end
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
