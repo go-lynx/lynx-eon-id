@@ -277,11 +277,16 @@ func (w *WorkerIDManager) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// tryReRegister attempts to re-register the current worker ID
+// tryReRegister attempts to re-register the current worker ID.
+// Only updates Redis if the key still belongs to this instance (same instance_id);
+// avoids overwriting another instance that took the same worker ID after expiry.
 func (w *WorkerIDManager) tryReRegister(ctx context.Context) error {
-	w.mu.Lock()
+	w.mu.RLock()
 	workerID := w.workerID
-	w.mu.Unlock()
+	registerTime := w.registerTime
+	instanceID := w.instanceID
+	localIP := w.localIP
+	w.mu.RUnlock()
 
 	if workerID == -1 {
 		return fmt.Errorf("no worker ID to re-register")
@@ -291,20 +296,36 @@ func (w *WorkerIDManager) tryReRegister(ctx context.Context) error {
 	defer cancel()
 
 	key := w.getWorkerKey(workerID)
-
-	now := time.Now()
 	workerInfo := WorkerInfo{
 		WorkerID:      workerID,
 		DatacenterID:  w.datacenterID,
-		IP:            w.localIP,
-		RegisterTime:  w.registerTime.Unix(),
-		LastHeartbeat: now.Unix(),
-		InstanceID:    w.instanceID,
+		IP:            localIP,
+		RegisterTime:  registerTime.Unix(),
+		LastHeartbeat: time.Now().Unix(),
+		InstanceID:    instanceID,
 	}
 
-	// Use SET with XX option - only set if exists, or use plain SET to reclaim
-	// This will overwrite any stale data
-	return w.redisClient.Set(timeoutCtx, key, workerInfo.String(), w.ttl).Err()
+	result, err := w.redisClient.Eval(timeoutCtx, LuaScriptHeartbeat, []string{key},
+		workerInfo.String(), instanceID, int64(w.ttl.Seconds())).Result()
+	if err != nil {
+		return fmt.Errorf("re-register script failed: %w", err)
+	}
+	code, err := redisResultToInt64(result)
+	if err != nil {
+		return err
+	}
+	switch code {
+	case 1:
+		return nil
+	case 0:
+		return fmt.Errorf("worker ID %d was taken by another instance", workerID)
+	case -1:
+		return fmt.Errorf("worker ID %d key has expired", workerID)
+	case -2:
+		return fmt.Errorf("worker ID %d has invalid JSON format", workerID)
+	default:
+		return fmt.Errorf("re-register returned unknown status: %d", code)
+	}
 }
 
 // sendHeartbeat sends heartbeat to maintain worker ID key TTL

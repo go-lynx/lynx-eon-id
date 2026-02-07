@@ -365,6 +365,11 @@ func (p *PlugSnowflake) Initialize(plugin plugins.Plugin, runtime plugins.Runtim
 		ttl:               ttl,
 		heartbeatInterval: heartbeatInterval,
 	}
+	// When auto-register is disabled, we use fixed worker ID and do not depend on Redis;
+	// mark healthy so GenerateID is allowed.
+	if !conf.AutoRegisterWorkerId {
+		atomic.StoreInt32(&p.workerManager.healthy, 1)
+	}
 
 	// Initialize generator with proper configuration
 	generatorConfig := &GeneratorConfig{
