@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -75,8 +76,8 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.workerID != -1 {
-		return w.workerID, nil // Already registered
+	if w.registered {
+		return w.workerID, nil // Already registered (workerID can be 0)
 	}
 
 	counterKey := w.getCounterKey()
@@ -128,6 +129,7 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 		if success {
 			// Registration successful
 			w.workerID = workerID
+			w.registered = true
 			w.registerTime = now
 
 			// Add to registry set (for monitoring)
@@ -160,7 +162,7 @@ func (w *WorkerIDManager) RegisterSpecificWorkerID(ctx context.Context, workerID
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.workerID != -1 {
+	if w.registered {
 		if w.workerID == workerID {
 			return nil // Already registered with this ID
 		}
@@ -194,6 +196,7 @@ func (w *WorkerIDManager) RegisterSpecificWorkerID(ctx context.Context, workerID
 	}
 
 	w.workerID = workerID
+	w.registered = true
 	w.registerTime = now
 
 	registryKey := w.getRegistryKey()
@@ -280,15 +283,17 @@ func (w *WorkerIDManager) heartbeatLoop(ctx context.Context) {
 // tryReRegister attempts to re-register the current worker ID.
 // Only updates Redis if the key still belongs to this instance (same instance_id);
 // avoids overwriting another instance that took the same worker ID after expiry.
+// On failure, clears local state so caller can attempt full re-registration.
 func (w *WorkerIDManager) tryReRegister(ctx context.Context) error {
 	w.mu.RLock()
 	workerID := w.workerID
+	registered := w.registered
 	registerTime := w.registerTime
 	instanceID := w.instanceID
 	localIP := w.localIP
 	w.mu.RUnlock()
 
-	if workerID == -1 {
+	if !registered || workerID < 0 {
 		return fmt.Errorf("no worker ID to re-register")
 	}
 
@@ -318,8 +323,18 @@ func (w *WorkerIDManager) tryReRegister(ctx context.Context) error {
 	case 1:
 		return nil
 	case 0:
+		// Another instance took our worker ID; clear state for full re-registration
+		w.mu.Lock()
+		w.workerID = -1
+		w.registered = false
+		w.mu.Unlock()
 		return fmt.Errorf("worker ID %d was taken by another instance", workerID)
 	case -1:
+		// Key expired; clear state for full re-registration
+		w.mu.Lock()
+		w.workerID = -1
+		w.registered = false
+		w.mu.Unlock()
 		return fmt.Errorf("worker ID %d key has expired", workerID)
 	case -2:
 		return fmt.Errorf("worker ID %d has invalid JSON format", workerID)
@@ -389,7 +404,7 @@ func (w *WorkerIDManager) UnregisterWorkerID(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.workerID == -1 {
+	if !w.registered {
 		return nil // Not registered
 	}
 
@@ -414,6 +429,7 @@ func (w *WorkerIDManager) UnregisterWorkerID(ctx context.Context) error {
 	_ = w.redisClient.Del(ctx, key)
 
 	w.workerID = -1
+	w.registered = false
 	return nil
 }
 
@@ -497,7 +513,10 @@ func (w *WorkerIDManager) getRegistryKey() string {
 }
 
 func (w *WorkerIDManager) generateInstanceID() string {
-	return fmt.Sprintf("instance-%d-%d-%d", time.Now().UnixNano(), w.datacenterID, time.Now().UnixMicro()%10000)
+	// Include PID and random to reduce collision probability under high concurrency
+	pid := os.Getpid()
+	r := rand.Intn(100000)
+	return fmt.Sprintf("instance-%d-%d-%d-%d-%d", time.Now().UnixNano(), w.datacenterID, pid, time.Now().UnixMicro()%10000, r)
 }
 
 // WorkerInfo represents information about a registered worker

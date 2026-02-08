@@ -48,8 +48,9 @@ type WorkerIDManager struct {
 	keyPrefix         string
 	ttl               time.Duration
 	heartbeatInterval time.Duration
-	// Worker state
-	workerID int64
+	// Worker state: use registered to distinguish "not yet registered" from "registered with workerID 0"
+	workerID   int64
+	registered bool
 	// Heartbeat lifecycle management
 	heartbeatCtx     context.Context
 	heartbeatCancel  context.CancelFunc
@@ -103,8 +104,14 @@ type Generator struct {
 	cacheIndex          int
 	cacheSize           int
 
-	// Shutdown state
-	isShuttingDown bool
+	// Shutdown state (isShuttingDownAtomic allows lock-free check in retry loop)
+	isShuttingDown       bool
+	isShuttingDownAtomic int32
+
+	// Timestamp bits for ParseID validation (64 - timestampShift)
+	timestampBits int64
+	// Ignore mode: reject if lastTimestamp drifts beyond real time by this much (ms)
+	maxIgnoreBackwardDriftMs int64
 
 	// Metrics collection
 	metrics *Metrics
@@ -242,6 +249,9 @@ const (
 	// WorkerIDLockKey / WorkerIDRegistryKey follow DefaultRedisKeyPrefix naming; reserved for future use
 	WorkerIDLockKey     = "lynx:eon-id:lock:worker_id"
 	WorkerIDRegistryKey = "lynx:eon-id:registry"
+
+	// MaxClockBackwardWait is the maximum drift we wait for in Wait mode; larger backward returns error
+	MaxClockBackwardWait = 5 * time.Second
 
 	// ClockDriftActionWait Clock drift actions
 	ClockDriftActionWait   = "wait"

@@ -12,6 +12,17 @@ A high-performance, distributed unique ID generator plugin based on the Twitter 
 - 🔒 **Thread Safe**: Fully concurrent-safe ID generation
 - ⚡ **Sequence Cache**: Optional sequence number caching optimization
 
+## 🛡️ Robustness in Extreme Scenarios
+
+The plugin has been hardened for edge cases:
+
+- **Worker ID 0**: Correctly handles `worker_id: 0` in auto-registration (uses explicit `registered` state).
+- **Long Clock Backward**: In `wait` mode, backward drift > 5s returns an error instead of futile retries.
+- **Ignore Mode Safety**: In `ignore` mode, rejects when artificial timestamp drifts > 1 hour from real time.
+- **Shutdown Behavior**: `GenerateID` checks shutdown before each retry to exit quickly.
+- **Instance ID Uniqueness**: Instance IDs include PID and random value to reduce collision risk.
+- **Timestamp Validation**: `ParseID` uses config-derived timestamp bits for correct range checks.
+
 ## 📦 Installation
 
 ```bash
@@ -101,6 +112,12 @@ func main() {
 | `max_clock_drift` | duration | 5s | Maximum allowed clock backward |
 | `clock_check_interval` | duration | 1s | Clock check interval |
 | `clock_drift_action` | string | "wait" | Clock drift handling strategy: `wait`/`error`/`ignore` |
+
+**Clock drift behavior:**
+
+- `wait`: Waits up to 5s for clock recovery; if backward drift > 5s, returns an error.
+- `error`: Returns an error immediately on any backward drift.
+- `ignore`: Uses `lastTimestamp + 1` for monotonicity; returns an error if artificial drift exceeds 1 hour.
 
 ### Performance Configuration
 
@@ -231,6 +248,16 @@ go test -bench=. -benchmem
 # Run stress tests
 go test -run TestStress
 ```
+
+## 📝 Changelog / Robustness Fixes
+
+- **Worker registration**: Added `registered` flag so `worker_id: 0` is correctly treated as unregistered and goes through auto-registration.
+- **Clock backward (wait)**: Backward drift > 5s now returns `ClockDriftError` instead of waiting 5s and retrying.
+- **Clock backward (ignore)**: Returns error when artificial timestamp drift exceeds 1 hour to avoid overflow.
+- **Shutdown**: `GenerateID` checks shutdown before each retry and before sleeping for faster exit.
+- **Instance ID**: Includes process PID and random value to reduce collision risk under concurrency.
+- **ParseID**: Uses config-derived timestamp bits for validation instead of hardcoded 41 bits.
+- **Re-register failure**: On heartbeat/re-register failure (key expired or taken), clears local worker state for full re-registration.
 
 ## 📄 License
 

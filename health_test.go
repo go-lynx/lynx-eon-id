@@ -32,16 +32,14 @@ func TestPlugSnowflake_GetHealth(t *testing.T) {
 					clockBackwardCount: 0,
 					isShuttingDown:     false,
 				}
-				plugin.generator = generator
-
-				// Initialize metrics
-				plugin.metrics = &Metrics{
+				generator.metrics = &Metrics{
 					IDsGenerated:       100,
 					GenerationErrors:   0,
 					IDGenerationRate:   1000.0,
 					UptimeDuration:     time.Hour,
 					LastGenerationTime: time.Now(),
 				}
+				plugin.generator = generator
 
 				return plugin
 			},
@@ -114,16 +112,15 @@ func TestPlugSnowflake_GetHealth(t *testing.T) {
 					clockBackwardCount: 0,
 					isShuttingDown:     false,
 				}
-				plugin.generator = generator
-
 				// Initialize metrics with high error rate
-				plugin.metrics = &Metrics{
+				generator.metrics = &Metrics{
 					IDsGenerated:       70, // 70 successful
 					GenerationErrors:   30, // 30 errors = 30% error rate
 					IDGenerationRate:   1000.0,
 					UptimeDuration:     time.Hour,
 					LastGenerationTime: time.Now(),
 				}
+				plugin.generator = generator
 
 				return plugin
 			},
@@ -236,16 +233,14 @@ func TestPlugSnowflake_GetHealth_ThreadSafety(t *testing.T) {
 		clockBackwardCount: 0,
 		isShuttingDown:     false,
 	}
-	plugin.generator = generator
-
-	// Initialize metrics
-	plugin.metrics = &Metrics{
+	generator.metrics = &Metrics{
 		IDsGenerated:       100,
 		GenerationErrors:   0,
 		IDGenerationRate:   1000.0,
 		UptimeDuration:     time.Hour,
 		LastGenerationTime: time.Now(),
 	}
+	plugin.generator = generator
 
 	// Run multiple goroutines calling GetHealth concurrently
 	const numGoroutines = 10

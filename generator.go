@@ -69,6 +69,10 @@ func NewSnowflakeGeneratorCore(datacenterID, workerID int64, config *GeneratorCo
 	timestampShift := config.DatacenterIDBits + config.WorkerIDBits + config.SequenceBits
 	datacenterShift := config.WorkerIDBits + config.SequenceBits
 	workerShift := config.SequenceBits
+	timestampBits := int64(64 - timestampShift)
+	if timestampBits < 41 {
+		timestampBits = 41 // Ensure at least 41 bits for standard Snowflake
+	}
 
 	generator := &Generator{
 		datacenterID:               datacenterID,
@@ -84,6 +88,8 @@ func NewSnowflakeGeneratorCore(datacenterID, workerID int64, config *GeneratorCo
 		maxSequence:                (1 << config.SequenceBits) - 1,
 		lastTimestamp:              -1,
 		sequence:                   0,
+		timestampBits:              timestampBits,
+		maxIgnoreBackwardDriftMs:   3600000, // 1 hour: reject Ignore if drift exceeds this
 		enableClockDriftProtection: config.EnableClockDriftProtection,
 		maxClockDrift:              config.MaxClockDrift,
 		clockDriftAction:           config.ClockDriftAction,
@@ -112,6 +118,14 @@ func (g *Generator) GenerateID() (int64, error) {
 	maxRetries := 10
 
 	for retry := 0; retry < maxRetries; retry++ {
+		// Check shutdown before each attempt to exit quickly
+		if atomic.LoadInt32(&g.isShuttingDownAtomic) != 0 {
+			if g.metrics != nil {
+				g.metrics.RecordError("generation")
+			}
+			return 0, fmt.Errorf("generator is shutting down")
+		}
+
 		id, needWait, waitDuration, err := g.tryGenerateID()
 		if err != nil {
 			return 0, err
@@ -128,6 +142,13 @@ func (g *Generator) GenerateID() (int64, error) {
 		}
 
 		// Need to wait - do it OUTSIDE the lock
+		// Check shutdown before sleeping to avoid unnecessary delay
+		if atomic.LoadInt32(&g.isShuttingDownAtomic) != 0 {
+			if g.metrics != nil {
+				g.metrics.RecordError("generation")
+			}
+			return 0, fmt.Errorf("generator is shutting down")
+		}
 		if waitDuration > 0 {
 			time.Sleep(waitDuration)
 		} else {
@@ -180,14 +201,30 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 				Drift:         drift,
 			}
 		case ClockDriftActionWait:
+			// For large backward drift (>MaxClockBackwardWait), return error instead of futile retries
+			if drift > MaxClockBackwardWait {
+				return 0, false, 0, &ClockDriftError{
+					CurrentTime:   time.Unix(timestamp/1000, (timestamp%1000)*1000000),
+					LastTimestamp: time.Unix(g.lastTimestamp/1000, (g.lastTimestamp%1000)*1000000),
+					Drift:         drift,
+				}
+			}
 			// Return wait duration - caller will wait outside lock
-			maxWaitTime := 5 * time.Second
 			waitTime := drift + time.Millisecond
-			if waitTime > maxWaitTime {
-				waitTime = maxWaitTime
+			if waitTime > MaxClockBackwardWait {
+				waitTime = MaxClockBackwardWait
 			}
 			return 0, true, waitTime, nil
 		case ClockDriftActionIgnore:
+			// Reject if lastTimestamp has drifted too far from real time (timestamp overflow risk)
+			artificialDriftMs := g.lastTimestamp - timestamp
+			if artificialDriftMs > g.maxIgnoreBackwardDriftMs {
+				return 0, false, 0, &ClockDriftError{
+					CurrentTime:   time.Unix(timestamp/1000, (timestamp%1000)*1000000),
+					LastTimestamp: time.Unix(g.lastTimestamp/1000, (g.lastTimestamp%1000)*1000000),
+					Drift:         drift,
+				}
+			}
 			// Use last timestamp + 1 to ensure monotonicity
 			timestamp = g.lastTimestamp + 1
 			g.sequence = 0
@@ -340,10 +377,11 @@ func (g *Generator) Shutdown(ctx context.Context) error {
 	}
 
 	g.isShuttingDown = true
+	atomic.StoreInt32(&g.isShuttingDownAtomic, 1)
 	return nil
 }
 
-// ParseID parses a snowflake ID and returns its components; validates timestamp is within [epoch, epoch+41bit].
+// ParseID parses a snowflake ID and returns its components; validates timestamp is within [epoch, epoch+timestampBits].
 func (g *Generator) ParseID(id int64) (*SID, error) {
 	if id < 0 {
 		return nil, fmt.Errorf("invalid snowflake ID: %d", id)
@@ -355,8 +393,8 @@ func (g *Generator) ParseID(id int64) (*SID, error) {
 	datacenterID := (id >> g.datacenterShift) & g.maxDatacenterID
 	timestamp := (id >> g.timestampShift) + g.customEpoch
 
-	// Timestamp must be in [epoch, epoch+41bit] to reject malicious or corrupted IDs
-	maxTimestamp := g.customEpoch + (1<<41 - 1)
+	// Timestamp must be in [epoch, epoch+timestampBits] to reject malicious or corrupted IDs
+	maxTimestamp := g.customEpoch + ((int64(1) << g.timestampBits) - 1)
 	if timestamp < g.customEpoch || timestamp > maxTimestamp {
 		return nil, fmt.Errorf("invalid snowflake ID: timestamp %d out of range [%d, %d]",
 			timestamp, g.customEpoch, maxTimestamp)
