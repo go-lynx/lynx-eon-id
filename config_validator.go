@@ -20,7 +20,7 @@ func ValidateSnowflakeConfig(config *pb.EonId) error {
 
 	// Validate Redis integration configuration
 	if err := validateRedisIntegrationConfig(config); err != nil {
-		return fmt.Errorf("Redis integration validation failed: %w", err)
+		return fmt.Errorf("redis integration validation failed: %w", err)
 	}
 
 	// Validate clock drift protection configuration
@@ -73,16 +73,16 @@ func validateRedisIntegrationConfig(config *pb.EonId) error {
 	// If auto-registration is enabled, Redis configuration is required
 	if config.AutoRegisterWorkerId {
 		if config.RedisPluginName == "" {
-			return fmt.Errorf("Redis plugin name is required when auto worker ID registration is enabled")
+			return fmt.Errorf("redis plugin name is required when auto worker ID registration is enabled")
 		}
 
 		if config.RedisKeyPrefix == "" {
-			return fmt.Errorf("Redis key prefix is required when auto worker ID registration is enabled")
+			return fmt.Errorf("redis key prefix is required when auto worker ID registration is enabled")
 		}
 
 		// Validate Redis database number
 		if config.RedisDb < 0 || config.RedisDb > 15 {
-			return fmt.Errorf("Redis database number must be between 0 and 15, got %d", config.RedisDb)
+			return fmt.Errorf("redis database number must be between 0 and 15, got %d", config.RedisDb)
 		}
 
 		// Validate TTL settings

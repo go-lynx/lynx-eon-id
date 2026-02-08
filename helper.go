@@ -6,8 +6,8 @@ import (
 	"github.com/go-lynx/lynx"
 )
 
-// GetSnowflakePlugin returns the eon-id plugin instance from the Lynx app (only available after the plugin is initialized and started).
-func GetSnowflakePlugin() (*PlugSnowflake, error) {
+// GetEonIdPlugin returns the eon-id plugin instance from the Lynx app (only available after the plugin is initialized and started).
+func GetEonIdPlugin() (*PlugSnowflake, error) {
 	if lynx.Lynx() == nil {
 		return nil, fmt.Errorf("lynx application not initialized")
 	}
@@ -28,7 +28,7 @@ func GetSnowflakePlugin() (*PlugSnowflake, error) {
 
 // GenerateID generates a new unique ID using the global eon-id plugin.
 func GenerateID() (int64, error) {
-	plugin, err := GetSnowflakePlugin()
+	plugin, err := GetEonIdPlugin()
 	if err != nil {
 		return 0, err
 	}
@@ -38,7 +38,7 @@ func GenerateID() (int64, error) {
 
 // GenerateIDWithMetadata generates an ID with metadata using the global eon-id plugin.
 func GenerateIDWithMetadata() (int64, *SID, error) {
-	plugin, err := GetSnowflakePlugin()
+	plugin, err := GetEonIdPlugin()
 	if err != nil {
 		return 0, nil, err
 	}
@@ -48,7 +48,7 @@ func GenerateIDWithMetadata() (int64, *SID, error) {
 
 // ParseID parses an ID and returns its metadata using the global eon-id plugin.
 func ParseID(id int64) (*SID, error) {
-	plugin, err := GetSnowflakePlugin()
+	plugin, err := GetEonIdPlugin()
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func ParseID(id int64) (*SID, error) {
 
 // GetGenerator returns the underlying Generator instance from the global plugin.
 func GetGenerator() (*Generator, error) {
-	plugin, err := GetSnowflakePlugin()
+	plugin, err := GetEonIdPlugin()
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func GetGenerator() (*Generator, error) {
 
 // CheckHealth checks the health of the eon-id plugin.
 func CheckHealth() error {
-	plugin, err := GetSnowflakePlugin()
+	plugin, err := GetEonIdPlugin()
 	if err != nil {
 		return err
 	}

@@ -12,7 +12,7 @@ func init() {
 	})
 }
 
-// GetSnowflakeGenerator returns the eon-id plugin instance (same as GetSnowflakePlugin). Prefer GetSnowflakePlugin or package-level GenerateID().
-func GetSnowflakeGenerator() (*PlugSnowflake, error) {
-	return GetSnowflakePlugin()
+// GetEonIdGenerator returns the eon-id plugin instance (same as GetEonIdPlugin). Prefer GetEonIdPlugin or package-level GenerateID().
+func GetEonIdGenerator() (*PlugSnowflake, error) {
+	return GetEonIdPlugin()
 }
