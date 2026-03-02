@@ -3,7 +3,7 @@ package eonId
 // Plugin metadata
 const (
 	PluginName        = "eon-id"
-	PluginVersion     = "1.0.0"
+	PluginVersion     = "v1.5.4"
 	PluginDescription = "Eon-ID generator plugin with clock drift protection and Redis-based worker ID management"
 	ConfPrefix        = "lynx.eon-id"
 )
