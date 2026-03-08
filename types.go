@@ -262,6 +262,7 @@ const (
 // NewSnowflakePlugin creates a new snowflake plugin instance
 func NewSnowflakePlugin() *PlugSnowflake {
 	return &PlugSnowflake{
+		BasePlugin: plugins.NewBasePlugin(PluginName, PluginName, PluginDescription, PluginVersion, ConfPrefix, 100),
 		shutdownCh: make(chan struct{}),
 	}
 }
