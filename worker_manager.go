@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-kratos/kratos/v2/log"
+	"github.com/go-lynx/lynx/log"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -63,7 +63,9 @@ func NewWorkerIDManager(redisClient redis.UniversalClient, datacenterID int64, c
 		heartbeatCtx:      nil,
 		heartbeatCancel:   nil,
 		heartbeatRunning:  false,
-		localIP:           getLocalIP(), // Get local IP for troubleshooting
+		localIP:           getLocalIP(),
+		serviceName:       config.ServiceName,
+		serviceVersion:    config.ServiceVersion,
 	}
 	atomic.StoreInt32(&mgr.healthy, 1) // Initially healthy
 	return mgr
@@ -112,12 +114,14 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 		now := time.Now()
 		w.instanceID = w.generateInstanceID()
 		workerInfo := WorkerInfo{
-			WorkerID:      workerID,
-			DatacenterID:  w.datacenterID,
-			IP:            w.localIP,
-			RegisterTime:  now.Unix(),
-			LastHeartbeat: now.Unix(),
-			InstanceID:    w.instanceID,
+			WorkerID:       workerID,
+			DatacenterID:   w.datacenterID,
+			IP:             w.localIP,
+			ServiceName:    w.serviceName,
+			ServiceVersion: w.serviceVersion,
+			RegisterTime:   now.Unix(),
+			LastHeartbeat:  now.Unix(),
+			InstanceID:     w.instanceID,
 		}
 
 		key := w.getWorkerKey(workerID)
@@ -172,12 +176,14 @@ func (w *WorkerIDManager) RegisterSpecificWorkerID(ctx context.Context, workerID
 	now := time.Now()
 	w.instanceID = w.generateInstanceID()
 	workerInfo := WorkerInfo{
-		WorkerID:      workerID,
-		DatacenterID:  w.datacenterID,
-		IP:            w.localIP,
-		RegisterTime:  now.Unix(),
-		LastHeartbeat: now.Unix(),
-		InstanceID:    w.instanceID,
+		WorkerID:       workerID,
+		DatacenterID:   w.datacenterID,
+		IP:             w.localIP,
+		ServiceName:    w.serviceName,
+		ServiceVersion: w.serviceVersion,
+		RegisterTime:   now.Unix(),
+		LastHeartbeat:  now.Unix(),
+		InstanceID:     w.instanceID,
 	}
 
 	// SetNX to verify worker ID availability
@@ -291,6 +297,8 @@ func (w *WorkerIDManager) tryReRegister(ctx context.Context) error {
 	registerTime := w.registerTime
 	instanceID := w.instanceID
 	localIP := w.localIP
+	serviceName := w.serviceName
+	serviceVersion := w.serviceVersion
 	w.mu.RUnlock()
 
 	if !registered || workerID < 0 {
@@ -302,12 +310,14 @@ func (w *WorkerIDManager) tryReRegister(ctx context.Context) error {
 
 	key := w.getWorkerKey(workerID)
 	workerInfo := WorkerInfo{
-		WorkerID:      workerID,
-		DatacenterID:  w.datacenterID,
-		IP:            localIP,
-		RegisterTime:  registerTime.Unix(),
-		LastHeartbeat: time.Now().Unix(),
-		InstanceID:    instanceID,
+		WorkerID:       workerID,
+		DatacenterID:   w.datacenterID,
+		IP:             localIP,
+		ServiceName:    serviceName,
+		ServiceVersion: serviceVersion,
+		RegisterTime:   registerTime.Unix(),
+		LastHeartbeat:  time.Now().Unix(),
+		InstanceID:     instanceID,
 	}
 
 	result, err := w.redisClient.Eval(timeoutCtx, LuaScriptHeartbeat, []string{key},
@@ -351,6 +361,8 @@ func (w *WorkerIDManager) sendHeartbeat() error {
 	registerTime := w.registerTime
 	instanceID := w.instanceID
 	localIP := w.localIP
+	serviceName := w.serviceName
+	serviceVersion := w.serviceVersion
 	w.mu.RUnlock()
 
 	if workerID == -1 {
@@ -367,12 +379,14 @@ func (w *WorkerIDManager) sendHeartbeat() error {
 	key := w.getWorkerKey(workerID)
 
 	workerInfo := WorkerInfo{
-		WorkerID:      workerID,
-		DatacenterID:  w.datacenterID,
-		IP:            localIP,
-		RegisterTime:  registerTime.Unix(),
-		LastHeartbeat: time.Now().Unix(),
-		InstanceID:    instanceID,
+		WorkerID:       workerID,
+		DatacenterID:   w.datacenterID,
+		IP:             localIP,
+		ServiceName:    serviceName,
+		ServiceVersion: serviceVersion,
+		RegisterTime:   registerTime.Unix(),
+		LastHeartbeat:  time.Now().Unix(),
+		InstanceID:     instanceID,
 	}
 
 	result, err := w.redisClient.Eval(ctx, LuaScriptHeartbeat, []string{key},
@@ -399,37 +413,53 @@ func (w *WorkerIDManager) sendHeartbeat() error {
 	}
 }
 
-// UnregisterWorkerID unregisters the worker ID
+// UnregisterWorkerID unregisters the worker ID.
+// Only deletes the worker key and removes from registry when the key's instance_id matches this instance (safe for graceful shutdown).
 func (w *WorkerIDManager) UnregisterWorkerID(ctx context.Context) error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	if !w.registered {
+		w.mu.Unlock()
 		return nil // Not registered
 	}
 
-	// Mark as unhealthy first
-	atomic.StoreInt32(&w.healthy, 0)
+	workerID := w.workerID
+	instanceID := w.instanceID
+	registryMember := fmt.Sprintf("%d:%d", w.datacenterID, w.workerID)
 
-	// Stop heartbeat
+	// Mark as unhealthy and stop heartbeat first
+	atomic.StoreInt32(&w.healthy, 0)
 	if w.heartbeatCancel != nil {
 		w.heartbeatCancel()
 		w.heartbeatCancel = nil
 		w.heartbeatCtx = nil
 		w.heartbeatRunning = false
 	}
-
-	key := w.getWorkerKey(w.workerID)
-	registryKey := w.getRegistryKey()
-
-	// Remove from registry
-	_ = w.redisClient.SRem(ctx, registryKey, fmt.Sprintf("%d:%d", w.datacenterID, w.workerID))
-
-	// Remove worker key
-	_ = w.redisClient.Del(ctx, key)
-
 	w.workerID = -1
 	w.registered = false
+	w.mu.Unlock()
+
+	key := w.getWorkerKey(workerID)
+	registryKey := w.getRegistryKey()
+
+	// Only delete if the key still belongs to this instance (instance_id match)
+	infoStr, err := w.redisClient.Get(ctx, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			// Key already expired or deleted; still remove from registry if present (idempotent)
+			_ = w.redisClient.SRem(ctx, registryKey, registryMember).Err()
+		}
+		return nil
+	}
+	info, err := ParseWorkerInfo(infoStr)
+	if err != nil {
+		return nil
+	}
+	if info.InstanceID != instanceID {
+		// Another instance took this worker ID; do not delete or SRem
+		return nil
+	}
+	_ = w.redisClient.Del(ctx, key).Err()
+	_ = w.redisClient.SRem(ctx, registryKey, registryMember).Err()
 	return nil
 }
 
@@ -440,7 +470,8 @@ func (w *WorkerIDManager) GetWorkerID() int64 {
 	return w.workerID
 }
 
-// GetRegisteredWorkers returns all registered workers
+// GetRegisteredWorkers returns all registered workers.
+// Stale registry members (worker key expired or missing, e.g. after power loss) are removed from the set (lazy cleanup).
 func (w *WorkerIDManager) GetRegisteredWorkers(ctx context.Context) ([]WorkerInfo, error) {
 	registryKey := w.getRegistryKey()
 
@@ -466,10 +497,14 @@ func (w *WorkerIDManager) GetRegisteredWorkers(ctx context.Context) ([]WorkerInf
 			continue
 		}
 
-		// Get worker info
+		// Get worker info; worker key has TTL and may have expired (e.g. instance died without Stop)
 		key := w.getWorkerKeyForDatacenter(datacenterID, workerID)
 		infoStr, err := w.redisClient.Get(ctx, key).Result()
 		if err != nil {
+			if err == redis.Nil {
+				// Key expired or missing: remove stale member from registry (lazy cleanup)
+				_ = w.redisClient.SRem(ctx, registryKey, member).Err()
+			}
 			continue
 		}
 
@@ -521,12 +556,14 @@ func (w *WorkerIDManager) generateInstanceID() string {
 
 // WorkerInfo represents information about a registered worker
 type WorkerInfo struct {
-	WorkerID      int64  `json:"worker_id"`
-	DatacenterID  int64  `json:"datacenter_id"`
-	IP            string `json:"ip"`
-	RegisterTime  int64  `json:"register_time"`
-	LastHeartbeat int64  `json:"last_heartbeat"`
-	InstanceID    string `json:"instance_id"`
+	WorkerID       int64  `json:"worker_id"`
+	DatacenterID   int64  `json:"datacenter_id"`
+	IP             string `json:"ip"`
+	ServiceName    string `json:"service_name"`
+	ServiceVersion string `json:"service_version"`
+	RegisterTime   int64  `json:"register_time"`
+	LastHeartbeat  int64  `json:"last_heartbeat"`
+	InstanceID     string `json:"instance_id"`
 }
 
 // String returns JSON representation of WorkerInfo
@@ -559,6 +596,8 @@ type WorkerManagerConfig struct {
 	KeyPrefix         string
 	TTL               time.Duration
 	HeartbeatInterval time.Duration
+	ServiceName       string // Application name (e.g. from lynx.GetName())
+	ServiceVersion    string // Application version (e.g. from lynx.GetVersion())
 }
 
 // DefaultWorkerManagerConfig returns default worker manager configuration

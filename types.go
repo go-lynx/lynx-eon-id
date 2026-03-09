@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/go-kratos/kratos/v2/log"
+	"github.com/go-lynx/lynx"
+	lynxlog "github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
 	"github.com/redis/go-redis/v9"
 
@@ -56,9 +58,11 @@ type WorkerIDManager struct {
 	heartbeatCancel  context.CancelFunc
 	heartbeatRunning bool
 	// Registration info preserved for heartbeat
-	registerTime time.Time
-	instanceID   string
-	localIP      string // Local IP address for troubleshooting
+	registerTime   time.Time
+	instanceID     string
+	localIP        string // Local IP address for troubleshooting
+	serviceName    string // Application name from lynx (e.g. betday-user)
+	serviceVersion string // Application version from lynx (e.g. v1.0.0)
 	// Health state - used to stop ID generation when heartbeat fails
 	healthy int32 // atomic: 1=healthy, 0=unhealthy
 	// Mutex for state management
@@ -295,137 +299,7 @@ func (p *PlugSnowflake) UpdateConfiguration(config interface{}) error {
 	return fmt.Errorf("invalid configuration type for eon-id plugin")
 }
 
-// Lifecycle interface implementation
-
-// Initialize initializes the plugin
-func (p *PlugSnowflake) Initialize(plugin plugins.Plugin, runtime plugins.Runtime) error {
-	p.runtime = runtime
-	p.logger = runtime.GetLogger()
-
-	// Get configuration
-	conf := &pb.EonId{}
-	config := runtime.GetConfig()
-	if config != nil {
-		// Load protobuf configuration using the config prefix
-		if err := config.Value(ConfPrefix).Scan(conf); err != nil {
-			// If config loading fails, use default values and log warning
-			log.NewHelper(p.logger).Warnf("failed to load snowflake configuration: %v, using defaults", err)
-			conf = &pb.EonId{
-				DatacenterId:               0,
-				WorkerId:                   0,
-				AutoRegisterWorkerId:       true,
-				RedisKeyPrefix:             DefaultRedisKeyPrefix,
-				EnableClockDriftProtection: true,
-				ClockDriftAction:           "wait",
-				EnableSequenceCache:        true,
-				SequenceCacheSize:          1000,
-				EnableMetrics:              true,
-				RedisPluginName:            "redis",
-				RedisDb:                    0,
-				CustomEpoch:                DefaultEpoch,
-				WorkerIdBits:               DefaultWorkerBits,
-				SequenceBits:               DefaultSequenceBits,
-			}
-		}
-	}
-	p.conf = conf
-
-	// Initialize Redis client if auto registration is enabled
-	if conf.AutoRegisterWorkerId {
-		redisPluginName := conf.RedisPluginName
-		if redisPluginName == "" {
-			redisPluginName = "redis"
-		}
-
-		// Try to get Redis client from shared resources
-		if redisResource, err := runtime.GetSharedResource(redisPluginName); err == nil {
-			if redisClient, ok := redisResource.(redis.UniversalClient); ok {
-				p.redisClient = redisClient
-				log.NewHelper(p.logger).Infof("successfully connected to Redis plugin: %s", redisPluginName)
-			} else {
-				log.NewHelper(p.logger).Warnf("Redis resource is not UniversalClient type, disabling auto worker ID registration")
-				conf.AutoRegisterWorkerId = false
-			}
-		} else {
-			log.NewHelper(p.logger).Warnf("failed to get Redis client from plugin %s: %v, disabling auto worker ID registration", redisPluginName, err)
-			conf.AutoRegisterWorkerId = false
-		}
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Initialize worker manager; key prefix is normalized to match lynx:eon-id naming.
-	keyPrefix := NormalizeKeyPrefix(conf.RedisKeyPrefix)
-
-	ttl := DefaultWorkerIDTTL
-	if conf.WorkerIdTtl != nil {
-		ttl = conf.WorkerIdTtl.AsDuration()
-	}
-
-	heartbeatInterval := DefaultHeartbeatInterval
-	if conf.HeartbeatInterval != nil {
-		heartbeatInterval = conf.HeartbeatInterval.AsDuration()
-	}
-
-	p.workerManager = &WorkerIDManager{
-		redisClient:       p.redisClient,
-		workerID:          int64(conf.WorkerId),
-		datacenterID:      int64(conf.DatacenterId),
-		keyPrefix:         keyPrefix,
-		ttl:               ttl,
-		heartbeatInterval: heartbeatInterval,
-	}
-	// When auto-register is disabled, we use fixed worker ID and do not depend on Redis;
-	// mark healthy so GenerateID is allowed.
-	if !conf.AutoRegisterWorkerId {
-		atomic.StoreInt32(&p.workerManager.healthy, 1)
-	}
-
-	// Initialize generator with proper configuration
-	generatorConfig := &GeneratorConfig{
-		CustomEpoch:                conf.CustomEpoch,
-		DatacenterIDBits:           DefaultDatacenterBits,
-		WorkerIDBits:               int(conf.WorkerIdBits),
-		SequenceBits:               int(conf.SequenceBits),
-		EnableClockDriftProtection: conf.EnableClockDriftProtection,
-		MaxClockDrift:              time.Duration(5 * time.Second),
-		ClockDriftAction:           conf.ClockDriftAction,
-		EnableSequenceCache:        conf.EnableSequenceCache,
-		SequenceCacheSize:          int(conf.SequenceCacheSize),
-		EnableMetrics:              conf.EnableMetrics,
-	}
-
-	// Set default values if not specified
-	if generatorConfig.CustomEpoch == 0 {
-		generatorConfig.CustomEpoch = DefaultEpoch
-	}
-	if generatorConfig.WorkerIDBits == 0 {
-		generatorConfig.WorkerIDBits = DefaultWorkerBits
-	}
-	if generatorConfig.SequenceBits == 0 {
-		generatorConfig.SequenceBits = DefaultSequenceBits
-	}
-	if generatorConfig.SequenceCacheSize == 0 {
-		generatorConfig.SequenceCacheSize = 1000
-	}
-	if generatorConfig.ClockDriftAction == "" {
-		generatorConfig.ClockDriftAction = ClockDriftActionWait
-	}
-
-	// Handle clock drift configuration
-	if conf.MaxClockDrift != nil {
-		generatorConfig.MaxClockDrift = conf.MaxClockDrift.AsDuration()
-	}
-
-	var err error
-	p.generator, err = NewSnowflakeGeneratorCore(int64(conf.DatacenterId), int64(conf.WorkerId), generatorConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create eon-id generator: %w", err)
-	}
-
-	return nil
-}
+// Lifecycle interface implementation (Start not overridden: same as lynx-http/lynx-grpc, use BasePlugin.Start → StartupTasks + CheckHealth)
 
 // Stop stops the plugin (idempotent with CleanupTasks via stopCleanupOnce).
 func (p *PlugSnowflake) Stop(plugin plugins.Plugin) error {
@@ -448,9 +322,128 @@ func (p *PlugSnowflake) Status(plugin plugins.Plugin) plugins.PluginStatus {
 
 // LifecycleSteps interface implementation
 
-// InitializeResources initializes plugin resources
+// InitializeResources initializes plugin resources (config, Redis, worker manager, generator).
+// Same pattern as lynx-http/lynx-grpc so the framework always runs this during Init phase.
 func (p *PlugSnowflake) InitializeResources(rt plugins.Runtime) error {
-	// Initialize resources
+	p.runtime = rt
+	p.logger = rt.GetLogger()
+
+	conf := &pb.EonId{}
+	config := rt.GetConfig()
+	if config != nil {
+		if err := config.Value(ConfPrefix).Scan(conf); err != nil {
+			lynxlog.Warnf("failed to load snowflake configuration: %v, using defaults", err)
+			conf = &pb.EonId{
+				DatacenterId:               0,
+				WorkerId:                   0,
+				AutoRegisterWorkerId:       true,
+				RedisKeyPrefix:             DefaultRedisKeyPrefix,
+				EnableClockDriftProtection: true,
+				ClockDriftAction:           "wait",
+				EnableSequenceCache:        true,
+				SequenceCacheSize:          1000,
+				EnableMetrics:              true,
+				RedisPluginName:            "redis",
+				RedisDb:                    0,
+				CustomEpoch:                DefaultEpoch,
+				WorkerIdBits:               DefaultWorkerBits,
+				SequenceBits:               DefaultSequenceBits,
+			}
+		}
+	}
+	p.conf = conf
+
+	if conf.AutoRegisterWorkerId {
+		redisPluginName := conf.RedisPluginName
+		if redisPluginName == "" {
+			redisPluginName = "redis"
+		}
+		if redisResource, err := rt.GetSharedResource(redisPluginName); err == nil {
+			if redisClient, ok := redisResource.(redis.UniversalClient); ok {
+				p.redisClient = redisClient
+				lynxlog.Infof("successfully connected to Redis plugin: %s", redisPluginName)
+			} else {
+				lynxlog.Warnf("Redis resource is not UniversalClient type, disabling auto worker ID registration")
+				conf.AutoRegisterWorkerId = false
+			}
+		} else {
+			lynxlog.Warnf("failed to get Redis client from plugin %s: %v, disabling auto worker ID registration", redisPluginName, err)
+			conf.AutoRegisterWorkerId = false
+		}
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	keyPrefix := NormalizeKeyPrefix(conf.RedisKeyPrefix)
+	ttl := DefaultWorkerIDTTL
+	if conf.WorkerIdTtl != nil {
+		ttl = conf.WorkerIdTtl.AsDuration()
+	}
+	heartbeatInterval := DefaultHeartbeatInterval
+	if conf.HeartbeatInterval != nil {
+		heartbeatInterval = conf.HeartbeatInterval.AsDuration()
+	}
+
+	localIP := getLocalIP()
+	if localIP == "" || localIP == "unknown" {
+		if h := lynx.GetHost(); h != "" {
+			localIP = h
+		} else if localIP == "" {
+			localIP = "unknown"
+		}
+	}
+	p.workerManager = &WorkerIDManager{
+		redisClient:       p.redisClient,
+		workerID:          int64(conf.WorkerId),
+		datacenterID:      int64(conf.DatacenterId),
+		keyPrefix:         keyPrefix,
+		ttl:               ttl,
+		heartbeatInterval: heartbeatInterval,
+		localIP:           localIP,
+		serviceName:       lynx.GetName(),
+		serviceVersion:    lynx.GetVersion(),
+	}
+	if !conf.AutoRegisterWorkerId {
+		atomic.StoreInt32(&p.workerManager.healthy, 1)
+	}
+
+	generatorConfig := &GeneratorConfig{
+		CustomEpoch:                conf.CustomEpoch,
+		DatacenterIDBits:           DefaultDatacenterBits,
+		WorkerIDBits:               int(conf.WorkerIdBits),
+		SequenceBits:               int(conf.SequenceBits),
+		EnableClockDriftProtection: conf.EnableClockDriftProtection,
+		MaxClockDrift:              time.Duration(5 * time.Second),
+		ClockDriftAction:           conf.ClockDriftAction,
+		EnableSequenceCache:        conf.EnableSequenceCache,
+		SequenceCacheSize:          int(conf.SequenceCacheSize),
+		EnableMetrics:              conf.EnableMetrics,
+	}
+	if generatorConfig.CustomEpoch == 0 {
+		generatorConfig.CustomEpoch = DefaultEpoch
+	}
+	if generatorConfig.WorkerIDBits == 0 {
+		generatorConfig.WorkerIDBits = DefaultWorkerBits
+	}
+	if generatorConfig.SequenceBits == 0 {
+		generatorConfig.SequenceBits = DefaultSequenceBits
+	}
+	if generatorConfig.SequenceCacheSize == 0 {
+		generatorConfig.SequenceCacheSize = 1000
+	}
+	if generatorConfig.ClockDriftAction == "" {
+		generatorConfig.ClockDriftAction = ClockDriftActionWait
+	}
+	if conf.MaxClockDrift != nil {
+		generatorConfig.MaxClockDrift = conf.MaxClockDrift.AsDuration()
+	}
+
+	var err error
+	p.generator, err = NewSnowflakeGeneratorCore(int64(conf.DatacenterId), int64(conf.WorkerId), generatorConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create eon-id generator: %w", err)
+	}
 	return nil
 }
 
@@ -468,7 +461,7 @@ func (p *PlugSnowflake) StartupTasks() error {
 			defer cancel()
 
 			if err := p.workerManager.RegisterSpecificWorkerID(ctx, int64(p.conf.WorkerId)); err != nil {
-				log.NewHelper(p.logger).Warnf("failed to register specific worker ID %d: %v, trying auto-register", p.conf.WorkerId, err)
+				lynxlog.Warnf("failed to register specific worker ID %d: %v, trying auto-register", p.conf.WorkerId, err)
 				// Fall back to auto-register
 				maxWorkerID := int64((1 << p.conf.WorkerIdBits) - 1)
 				if maxWorkerID == 0 {
@@ -484,9 +477,9 @@ func (p *PlugSnowflake) StartupTasks() error {
 					p.generator.workerID = workerID
 					p.generator.mu.Unlock()
 				}
-				log.NewHelper(p.logger).Infof("auto-registered worker ID: %d", workerID)
+				lynxlog.Infof("auto-registered worker ID: %d", workerID)
 			} else {
-				log.NewHelper(p.logger).Infof("registered specific worker ID: %d", p.conf.WorkerId)
+				lynxlog.Infof("registered specific worker ID: %d", p.conf.WorkerId)
 			}
 		} else {
 			// Auto-register worker ID
@@ -507,7 +500,7 @@ func (p *PlugSnowflake) StartupTasks() error {
 				p.generator.workerID = workerID
 				p.generator.mu.Unlock()
 			}
-			log.NewHelper(p.logger).Infof("auto-registered worker ID: %d", workerID)
+			lynxlog.Infof("auto-registered worker ID: %d", workerID)
 		}
 	}
 
@@ -523,16 +516,16 @@ func (p *PlugSnowflake) doStopCleanup() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := p.workerManager.UnregisterWorkerID(ctx); err != nil {
-			log.NewHelper(p.logger).Warnf("failed to unregister worker ID: %v", err)
+			lynxlog.Warnf("failed to unregister worker ID: %v", err)
 		} else {
-			log.NewHelper(p.logger).Infof("unregistered worker ID")
+			lynxlog.Infof("unregistered worker ID")
 		}
 	}
 	if p.generator != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := p.generator.Shutdown(ctx); err != nil {
-			log.NewHelper(p.logger).Warnf("failed to shutdown generator: %v", err)
+			lynxlog.Warnf("failed to shutdown generator: %v", err)
 		}
 	}
 }
@@ -682,21 +675,23 @@ func (p *PlugSnowflake) GetHealth() plugins.HealthReport {
 
 // DependencyAware interface implementation
 
-// GetDependencies returns plugin dependencies (Redis declared only when auto-register enabled; ID matches redis_plugin_name).
+// RedisPluginID is the plugin ID of lynx-redis (go-lynx.plugin.redis.client.<version>).
+// Used so eon-id loads after redis and can get the client via GetSharedResource("redis").
+const RedisPluginID = "go-lynx.plugin.redis.client.v1.5.5"
+
+// GetDependencies returns plugin dependencies so eon-id loads after redis and can use GetSharedResource("redis").
+// When conf is nil we still declare the dependency so load order is correct; when conf has AutoRegisterWorkerId we require redis.
 func (p *PlugSnowflake) GetDependencies() []plugins.Dependency {
 	var deps []plugins.Dependency
-	if p.conf == nil || !p.conf.AutoRegisterWorkerId {
+	needRedis := p.conf == nil || p.conf.AutoRegisterWorkerId
+	if !needRedis {
 		return deps
 	}
-	name := p.conf.RedisPluginName
-	if name == "" {
-		name = "redis"
-	}
 	deps = append(deps, plugins.Dependency{
-		ID:          name,
+		ID:          RedisPluginID,
 		Name:        "Redis",
-		Type:        plugins.DependencyTypeOptional,
-		Required:    false,
+		Type:        plugins.DependencyTypeRequired,
+		Required:    true,
 		Description: "Redis client for worker ID management",
 	})
 	return deps
