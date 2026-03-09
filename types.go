@@ -427,17 +427,6 @@ func (p *PlugSnowflake) Initialize(plugin plugins.Plugin, runtime plugins.Runtim
 	return nil
 }
 
-// Start starts the plugin
-func (p *PlugSnowflake) Start(plugin plugins.Plugin) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Note: Worker manager heartbeat is already started in RegisterWorkerID
-	// No additional goroutine needed here as heartbeat runs in workerManager
-
-	return nil
-}
-
 // Stop stops the plugin (idempotent with CleanupTasks via stopCleanupOnce).
 func (p *PlugSnowflake) Stop(plugin plugins.Plugin) error {
 	p.shutdownOnce.Do(func() { close(p.shutdownCh) })
