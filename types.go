@@ -387,7 +387,7 @@ func (p *PlugSnowflake) InitializeResources(rt plugins.Runtime) error {
 
 	localIP := getLocalIP()
 	if localIP == "" || localIP == "unknown" {
-		if h := lynx.GetHost(); h != "" {
+		if h := currentLynxHost(); h != "" {
 			localIP = h
 		} else if localIP == "" {
 			localIP = "unknown"
@@ -401,8 +401,8 @@ func (p *PlugSnowflake) InitializeResources(rt plugins.Runtime) error {
 		ttl:               ttl,
 		heartbeatInterval: heartbeatInterval,
 		localIP:           localIP,
-		serviceName:       lynx.GetName(),
-		serviceVersion:    lynx.GetVersion(),
+		serviceName:       currentLynxName(),
+		serviceVersion:    currentLynxVersion(),
 	}
 	if !conf.AutoRegisterWorkerId {
 		atomic.StoreInt32(&p.workerManager.healthy, 1)
@@ -675,9 +675,9 @@ func (p *PlugSnowflake) GetHealth() plugins.HealthReport {
 
 // DependencyAware interface implementation
 
-// RedisPluginID is the plugin ID of lynx-redis (go-lynx.plugin.redis.client.<version>).
+// RedisPluginName is the stable plugin name of lynx-redis.
 // Used so eon-id loads after redis and can get the client via GetSharedResource("redis").
-const RedisPluginID = "go-lynx.plugin.redis.client.v1.5.5"
+const RedisPluginName = "redis.client"
 
 // GetDependencies returns plugin dependencies so eon-id loads after redis and can use GetSharedResource("redis").
 // When conf is nil we still declare the dependency so load order is correct; when conf has AutoRegisterWorkerId we require redis.
@@ -688,8 +688,7 @@ func (p *PlugSnowflake) GetDependencies() []plugins.Dependency {
 		return deps
 	}
 	deps = append(deps, plugins.Dependency{
-		ID:          RedisPluginID,
-		Name:        "Redis",
+		Name:        RedisPluginName,
 		Type:        plugins.DependencyTypeRequired,
 		Required:    true,
 		Description: "Redis client for worker ID management",
@@ -742,6 +741,31 @@ func (p *PlugSnowflake) GenerateIDWithMetadata() (int64, *SID, error) {
 
 	// Generator methods have their own mutex protection
 	return generator.GenerateIDWithMetadata()
+}
+
+func currentLynxApp() *lynx.LynxApp {
+	return lynx.Lynx()
+}
+
+func currentLynxName() string {
+	if app := currentLynxApp(); app != nil {
+		return app.Name()
+	}
+	return ""
+}
+
+func currentLynxHost() string {
+	if app := currentLynxApp(); app != nil {
+		return app.Host()
+	}
+	return ""
+}
+
+func currentLynxVersion() string {
+	if app := currentLynxApp(); app != nil {
+		return app.Version()
+	}
+	return ""
 }
 
 // ParseID parses a snowflake ID into its components
