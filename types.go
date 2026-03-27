@@ -358,16 +358,11 @@ func (p *PlugSnowflake) InitializeResources(rt plugins.Runtime) error {
 		if redisPluginName == "" {
 			redisPluginName = "redis"
 		}
-		if redisResource, err := rt.GetSharedResource(redisPluginName); err == nil {
-			if redisClient, ok := redisResource.(redis.UniversalClient); ok {
-				p.redisClient = redisClient
-				lynxlog.Infof("successfully connected to Redis plugin: %s", redisPluginName)
-			} else {
-				lynxlog.Warnf("Redis resource is not UniversalClient type, disabling auto worker ID registration")
-				conf.AutoRegisterWorkerId = false
-			}
+		if redisClient, resolvedName, err := resolveRedisClientResource(rt, redisPluginName); err == nil {
+			p.redisClient = redisClient
+			lynxlog.Infof("successfully connected to Redis plugin resource: %s", resolvedName)
 		} else {
-			lynxlog.Warnf("failed to get Redis client from plugin %s: %v, disabling auto worker ID registration", redisPluginName, err)
+			lynxlog.Warnf("failed to get Redis client from plugin resource %s: %v, disabling auto worker ID registration", redisPluginName, err)
 			conf.AutoRegisterWorkerId = false
 		}
 	}
@@ -678,6 +673,7 @@ func (p *PlugSnowflake) GetHealth() plugins.HealthReport {
 // RedisPluginName is the stable plugin name of lynx-redis.
 // Used so eon-id loads after redis and can get the client via GetSharedResource("redis").
 const RedisPluginName = "redis.client"
+const RedisLegacyResourceName = "redis"
 
 // GetDependencies returns plugin dependencies so eon-id loads after redis and can use GetSharedResource("redis").
 // When conf is nil we still declare the dependency so load order is correct; when conf has AutoRegisterWorkerId we require redis.
@@ -694,6 +690,43 @@ func (p *PlugSnowflake) GetDependencies() []plugins.Dependency {
 		Description: "Redis client for worker ID management",
 	})
 	return deps
+}
+
+func resolveRedisClientResource(rt plugins.Runtime, preferredName string) (redis.UniversalClient, string, error) {
+	candidates := []string{preferredName}
+	switch preferredName {
+	case "", RedisLegacyResourceName:
+		candidates = append(candidates, RedisPluginName)
+	case RedisPluginName:
+		candidates = append(candidates, RedisLegacyResourceName)
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	var lastErr error
+	for _, name := range candidates {
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+
+		resource, err := rt.GetSharedResource(name)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		client, ok := resource.(redis.UniversalClient)
+		if !ok {
+			return nil, name, fmt.Errorf("resource %s is not a redis.UniversalClient", name)
+		}
+		return client, name, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no redis shared resource candidates matched")
+	}
+	return nil, "", lastErr
 }
 
 // Snowflake specific methods
