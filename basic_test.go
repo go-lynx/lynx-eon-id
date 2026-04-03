@@ -60,8 +60,8 @@ func TestBasicFunctionality(t *testing.T) {
 	// Test plugin metadata
 	t.Run("Plugin Metadata", func(t *testing.T) {
 		plugin := NewSnowflakePlugin()
-		assert.Equal(t, "snowflake", plugin.ID())
-		assert.Contains(t, plugin.Description(), "Snowflake")
+		assert.Equal(t, PluginName, plugin.ID())
+		assert.Contains(t, plugin.Description(), "Eon-ID")
 		// Note: Name() and Version() methods may not be properly initialized
 	})
 

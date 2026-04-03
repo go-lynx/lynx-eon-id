@@ -303,21 +303,12 @@ func (p *PlugSnowflake) UpdateConfiguration(config interface{}) error {
 
 // Stop stops the plugin (idempotent with CleanupTasks via stopCleanupOnce).
 func (p *PlugSnowflake) Stop(plugin plugins.Plugin) error {
-	p.shutdownOnce.Do(func() { close(p.shutdownCh) })
-
-	p.stopCleanupOnce.Do(p.doStopCleanup)
-	return nil
+	return p.stopWithContext(context.Background(), plugin, "Stop")
 }
 
 // Status returns the plugin status
 func (p *PlugSnowflake) Status(plugin plugins.Plugin) plugins.PluginStatus {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if p.generator != nil {
-		return plugins.StatusActive
-	}
-	return plugins.StatusInactive
+	return p.BasePlugin.Status(plugin)
 }
 
 // LifecycleSteps interface implementation
@@ -444,92 +435,17 @@ func (p *PlugSnowflake) InitializeResources(rt plugins.Runtime) error {
 
 // StartupTasks performs startup tasks
 func (p *PlugSnowflake) StartupTasks() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Auto-register worker ID if enabled and not already registered
-	if p.conf != nil && p.conf.AutoRegisterWorkerId && p.workerManager != nil && p.redisClient != nil {
-		// Check if worker ID is already set (manual configuration)
-		if p.conf.WorkerId > 0 {
-			// Try to register the specific worker ID
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			if err := p.workerManager.RegisterSpecificWorkerID(ctx, int64(p.conf.WorkerId)); err != nil {
-				lynxlog.Warnf("failed to register specific worker ID %d: %v, trying auto-register", p.conf.WorkerId, err)
-				// Fall back to auto-register
-				maxWorkerID := int64((1 << p.conf.WorkerIdBits) - 1)
-				if maxWorkerID == 0 {
-					maxWorkerID = 31 // Default max worker ID
-				}
-				workerID, err := p.workerManager.RegisterWorkerID(ctx, maxWorkerID)
-				if err != nil {
-					return fmt.Errorf("failed to auto-register worker ID: %w", err)
-				}
-				// Update generator with new worker ID (thread-safe)
-				if p.generator != nil {
-					p.generator.mu.Lock()
-					p.generator.workerID = workerID
-					p.generator.mu.Unlock()
-				}
-				lynxlog.Infof("auto-registered worker ID: %d", workerID)
-			} else {
-				lynxlog.Infof("registered specific worker ID: %d", p.conf.WorkerId)
-			}
-		} else {
-			// Auto-register worker ID
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			maxWorkerID := int64((1 << p.conf.WorkerIdBits) - 1)
-			if maxWorkerID == 0 {
-				maxWorkerID = 31 // Default max worker ID
-			}
-			workerID, err := p.workerManager.RegisterWorkerID(ctx, maxWorkerID)
-			if err != nil {
-				return fmt.Errorf("failed to auto-register worker ID: %w", err)
-			}
-			// Update generator with new worker ID (thread-safe)
-			if p.generator != nil {
-				p.generator.mu.Lock()
-				p.generator.workerID = workerID
-				p.generator.mu.Unlock()
-			}
-			lynxlog.Infof("auto-registered worker ID: %d", workerID)
-		}
-	}
-
-	return nil
+	return p.startupTasksContext(context.Background())
 }
 
 // doStopCleanup runs shutdown logic once; shared by Stop and CleanupTasks via stopCleanupOnce.
 func (p *PlugSnowflake) doStopCleanup() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.workerManager != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := p.workerManager.UnregisterWorkerID(ctx); err != nil {
-			lynxlog.Warnf("failed to unregister worker ID: %v", err)
-		} else {
-			lynxlog.Infof("unregistered worker ID")
-		}
-	}
-	if p.generator != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := p.generator.Shutdown(ctx); err != nil {
-			lynxlog.Warnf("failed to shutdown generator: %v", err)
-		}
-	}
+	_ = p.doStopCleanupContext(context.Background())
 }
 
 // CleanupTasks performs cleanup (idempotent with Stop via doStopCleanup).
 func (p *PlugSnowflake) CleanupTasks() error {
-	p.shutdownOnce.Do(func() { close(p.shutdownCh) })
-	p.stopCleanupOnce.Do(p.doStopCleanup)
-	return nil
+	return p.cleanupTasksContext(context.Background())
 }
 
 // CheckHealth checks plugin health
