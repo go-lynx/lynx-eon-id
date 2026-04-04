@@ -72,7 +72,7 @@ func main() {
     fmt.Printf("Generated ID: %d\n", id)
     
     // 方式二：获取插件实例后调用
-    plugin, err := eonid.GetSnowflakePlugin()
+    plugin, err := eonid.GetEonIdPlugin()
     if err != nil {
         panic(err)
     }
@@ -220,7 +220,7 @@ This ensures IDs generated from different datacenters will never conflict.
 The plugin provides detailed health check reports:
 
 ```go
-plugin, err := eonid.GetSnowflakePlugin()
+plugin, err := eonid.GetEonIdPlugin()
 if err != nil {
     panic(err)
 }

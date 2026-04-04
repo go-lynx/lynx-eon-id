@@ -538,19 +538,56 @@ type MockErrorGenerator struct {
 	*Generator
 	failureRate float64 // 0.0 to 1.0
 	injector    *FaultInjector
+	attempts    uint64
 }
 
 // GenerateID overrides the normal GenerateID to inject failures
 func (meg *MockErrorGenerator) GenerateID() (int64, error) {
 	// Check if we should simulate a failure
 	if meg.injector.IsFaultActive(FaultTypeSystemOverload) {
-		// Simulate random failures under system overload
-		if time.Now().UnixNano()%100 < int64(meg.failureRate*100) {
+		// Keep failure injection deterministic so the test is stable across timer resolutions.
+		if meg.shouldFail() {
 			return 0, errors.New("simulated system overload failure")
 		}
 	}
 
 	return meg.Generator.GenerateID()
+}
+
+func (meg *MockErrorGenerator) shouldFail() bool {
+	rate := meg.failureRate
+	if config, ok := meg.injector.GetFaultConfig(FaultTypeSystemOverload).(map[string]interface{}); ok {
+		if configuredRate, ok := config["failure_rate"]; ok {
+			switch value := configuredRate.(type) {
+			case float64:
+				rate = value
+			case float32:
+				rate = float64(value)
+			case int:
+				rate = float64(value)
+			case int32:
+				rate = float64(value)
+			case int64:
+				rate = float64(value)
+			}
+		}
+	}
+
+	switch {
+	case rate <= 0:
+		return false
+	case rate >= 1:
+		return true
+	}
+
+	const resolution = 1000
+	threshold := uint64(rate * resolution)
+	if threshold == 0 {
+		return false
+	}
+
+	attempt := atomic.AddUint64(&meg.attempts, 1) - 1
+	return attempt%resolution < threshold
 }
 
 // TestErrorRecovery tests recovery from various error conditions

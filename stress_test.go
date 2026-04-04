@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -374,18 +375,10 @@ func calculateMaxLatency(latencies []time.Duration) time.Duration {
 }
 
 func calculatePercentileLatency(latencies []time.Duration, percentile int) time.Duration {
-	// Simple percentile calculation (not the most efficient, but works for testing)
+	// Sorting once keeps the stress test within the default go test timeout.
 	sorted := make([]time.Duration, len(latencies))
 	copy(sorted, latencies)
-
-	// Simple bubble sort for small datasets
-	for i := 0; i < len(sorted); i++ {
-		for j := 0; j < len(sorted)-1-i; j++ {
-			if sorted[j] > sorted[j+1] {
-				sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
-			}
-		}
-	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 
 	index := int(float64(len(sorted)) * float64(percentile) / 100.0)
 	if index >= len(sorted) {
