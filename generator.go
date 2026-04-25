@@ -11,6 +11,10 @@ import (
 
 // NewSnowflakeGeneratorWithConfig creates an Eon-ID generator from protobuf config.
 func NewSnowflakeGeneratorWithConfig(config *pb.EonId) (*Generator, error) {
+	if config == nil {
+		return nil, fmt.Errorf("eon-id configuration cannot be nil")
+	}
+
 	maxClockDrift := DefaultMaxClockDrift
 	if config.MaxClockDrift != nil {
 		maxClockDrift = config.MaxClockDrift.AsDuration()
@@ -126,7 +130,7 @@ func (g *Generator) GenerateID() (int64, error) {
 			return 0, fmt.Errorf("generator is shutting down")
 		}
 
-		id, needWait, waitDuration, err := g.tryGenerateID()
+		id, needWait, waitDuration, cacheHit, err := g.tryGenerateID()
 		if err != nil {
 			return 0, err
 		}
@@ -135,7 +139,6 @@ func (g *Generator) GenerateID() (int64, error) {
 			// Success - record metrics and return
 			latency := time.Since(startTime)
 			if g.metrics != nil {
-				cacheHit := g.enableSequenceCache && g.cacheIndex > 0
 				g.metrics.RecordIDGeneration(latency, cacheHit)
 			}
 			return id, nil
@@ -163,9 +166,9 @@ func (g *Generator) GenerateID() (int64, error) {
 	return 0, fmt.Errorf("failed to generate ID after %d retries", maxRetries)
 }
 
-// tryGenerateID attempts to generate an ID, returns (id, needWait, waitDuration, error)
+// tryGenerateID attempts to generate an ID, returns (id, needWait, waitDuration, cacheHit, error)
 // If needWait is true, caller should wait for waitDuration and retry
-func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
+func (g *Generator) tryGenerateID() (int64, bool, time.Duration, bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -174,7 +177,7 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 		if g.metrics != nil {
 			g.metrics.RecordError("generation")
 		}
-		return 0, false, 0, fmt.Errorf("generator is shutting down")
+		return 0, false, 0, false, fmt.Errorf("generator is shutting down")
 	}
 
 	timestamp := g.getCurrentTimestamp()
@@ -182,7 +185,7 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 	// Check for clock drift (no sleep in this check)
 	if g.enableClockDriftProtection {
 		if err := g.checkClockDriftNoSleep(timestamp); err != nil {
-			return 0, false, 0, err
+			return 0, false, 0, false, err
 		}
 	}
 
@@ -195,7 +198,7 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 
 		switch g.clockDriftAction {
 		case ClockDriftActionError:
-			return 0, false, 0, &ClockDriftError{
+			return 0, false, 0, false, &ClockDriftError{
 				CurrentTime:   time.Unix(timestamp/1000, (timestamp%1000)*1000000),
 				LastTimestamp: time.Unix(g.lastTimestamp/1000, (g.lastTimestamp%1000)*1000000),
 				Drift:         drift,
@@ -203,7 +206,7 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 		case ClockDriftActionWait:
 			// For large backward drift (>MaxClockBackwardWait), return error instead of futile retries
 			if drift > MaxClockBackwardWait {
-				return 0, false, 0, &ClockDriftError{
+				return 0, false, 0, false, &ClockDriftError{
 					CurrentTime:   time.Unix(timestamp/1000, (timestamp%1000)*1000000),
 					LastTimestamp: time.Unix(g.lastTimestamp/1000, (g.lastTimestamp%1000)*1000000),
 					Drift:         drift,
@@ -214,12 +217,12 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 			if waitTime > MaxClockBackwardWait {
 				waitTime = MaxClockBackwardWait
 			}
-			return 0, true, waitTime, nil
+			return 0, true, waitTime, false, nil
 		case ClockDriftActionIgnore:
 			// Reject if lastTimestamp has drifted too far from real time (timestamp overflow risk)
 			artificialDriftMs := g.lastTimestamp - timestamp
 			if artificialDriftMs > g.maxIgnoreBackwardDriftMs {
-				return 0, false, 0, &ClockDriftError{
+				return 0, false, 0, false, &ClockDriftError{
 					CurrentTime:   time.Unix(timestamp/1000, (timestamp%1000)*1000000),
 					LastTimestamp: time.Unix(g.lastTimestamp/1000, (g.lastTimestamp%1000)*1000000),
 					Drift:         drift,
@@ -229,11 +232,12 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 			timestamp = g.lastTimestamp + 1
 			g.sequence = 0
 		default:
-			return 0, false, 0, fmt.Errorf("unknown clock drift action: %s", g.clockDriftAction)
+			return 0, false, 0, false, fmt.Errorf("unknown clock drift action: %s", g.clockDriftAction)
 		}
 	}
 
 	// If same millisecond, increment sequence
+	cacheHit := false
 	if timestamp == g.lastTimestamp {
 		if g.enableSequenceCache && g.cacheIndex < len(g.sequenceCache) && g.cacheIndex >= 0 {
 			// Use cached sequence if available and valid
@@ -241,12 +245,13 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 			g.cacheIndex++
 			if cachedSeq > 0 && cachedSeq <= g.maxSequence {
 				g.sequence = cachedSeq
+				cacheHit = true
 			} else {
 				// Invalid cached sequence, fall back to normal increment
 				g.sequence = (g.sequence + 1) & g.maxSequence
 				if g.sequence == 0 {
 					// Sequence overflow - return signal to wait
-					return 0, true, 0, nil
+					return 0, true, 0, false, nil
 				}
 			}
 		} else {
@@ -254,7 +259,7 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 			g.sequence = (g.sequence + 1) & g.maxSequence
 			if g.sequence == 0 {
 				// Sequence overflow - return signal to wait outside lock
-				return 0, true, 0, nil
+				return 0, true, 0, false, nil
 			}
 		}
 	} else {
@@ -276,7 +281,7 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, error) {
 	// Update statistics using atomic operation
 	atomic.AddInt64(&g.generatedCount, 1)
 
-	return id, false, 0, nil
+	return id, false, 0, cacheHit, nil
 }
 
 // checkClockDriftNoSleep checks for clock drift without sleeping

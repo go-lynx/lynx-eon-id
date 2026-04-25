@@ -1,6 +1,7 @@
 package eonId
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -133,5 +134,43 @@ func TestValidateEpoch_Future(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Error("Validate should reject future epoch")
+	}
+}
+
+func TestNewSnowflakeGeneratorWithConfig_Nil(t *testing.T) {
+	if _, err := NewSnowflakeGeneratorWithConfig(nil); err == nil {
+		t.Fatal("NewSnowflakeGeneratorWithConfig(nil) should return an error")
+	}
+}
+
+func TestGenerator_GenerateID_ConcurrentMetricsAndCache(t *testing.T) {
+	cfg := DefaultGeneratorConfig()
+	cfg.EnableMetrics = true
+	cfg.EnableSequenceCache = true
+	cfg.SequenceCacheSize = 64
+	g, err := NewSnowflakeGeneratorCore(1, 1, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines = 16
+	const perGoroutine = 128
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines*perGoroutine)
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perGoroutine; j++ {
+				if _, err := g.GenerateID(); err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("GenerateID failed: %v", err)
 	}
 }

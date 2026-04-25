@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
-	"github.com/go-kratos/kratos/v2/log"
+	lynxlog "github.com/go-lynx/lynx/log"
 	"github.com/redis/go-redis/v9"
 
 	pb "github.com/go-lynx/lynx-eon-id/conf"
@@ -77,6 +76,9 @@ func NewRedisIntegration(config *RedisIntegrationConfig) (*RedisIntegration, err
 	if config == nil {
 		config = DefaultRedisIntegrationConfig()
 	}
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 
 	// Get Redis client from Redis plugin
 	client, err := getRedisClientFromPlugin(config.RedisPluginName, config.Database)
@@ -116,124 +118,58 @@ func (r *RedisIntegration) CreateWorkerManager(datacenterID int64, config *Worke
 
 // getRedisClientFromPlugin gets Redis client from the Redis plugin
 func getRedisClientFromPlugin(pluginName string, database int) (redis.UniversalClient, error) {
-	// Try to get Redis plugin instance from the global plugin registry
-	// This implementation integrates with the Lynx plugin system
-
-	// Method 1: Try to get from global registry (if available)
 	if client := tryGetFromGlobalRegistry(pluginName, database); client != nil {
 		return client, nil
 	}
 
-	// Method 2: Try to create from configuration with enhanced options
-	if client := tryCreateFromConfig(pluginName, database); client != nil {
-		return client, nil
-	}
-
-	// Method 3: Try to create with cluster support
-	if client := tryCreateClusterClient(pluginName, database); client != nil {
-		return client, nil
-	}
-
-	return nil, fmt.Errorf("redis plugin '%s' not found or not initialized", pluginName)
+	return nil, fmt.Errorf("redis plugin resource %q not found or not initialized", pluginName)
 }
 
-// tryGetFromGlobalRegistry attempts to get Redis client from global plugin registry
-func tryGetFromGlobalRegistry(pluginName string, database int) redis.UniversalClient {
-	// This is a placeholder implementation
-	// In real scenario, you would use the actual plugin registry
-	// For example: return plugins.GetRedisClient(pluginName, database)
+type redisUniversalClientProvider interface {
+	UniversalClient(context.Context) (redis.UniversalClient, error)
+}
 
-	// Try to get from global context if available
-	// This is a placeholder implementation
-	// In real scenario, you would use the actual plugin registry
+// tryGetFromGlobalRegistry attempts to get Redis client from Lynx runtime shared resources.
+func tryGetFromGlobalRegistry(pluginName string, database int) redis.UniversalClient {
+	app := currentLynxApp()
+	if app == nil || app.GetPluginManager() == nil || app.GetPluginManager().GetRuntime() == nil {
+		return nil
+	}
+
+	rt := app.GetPluginManager().GetRuntime()
+	candidates := []string{pluginName, RedisPluginName, RedisLegacyResourceName, "redis.provider", RedisPluginName + ".provider"}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, name := range candidates {
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		resource, err := rt.GetSharedResource(name)
+		if err != nil {
+			continue
+		}
+		switch v := resource.(type) {
+		case redis.UniversalClient:
+			return v
+		case redisUniversalClientProvider:
+			client, err := v.UniversalClient(context.Background())
+			if err == nil {
+				return client
+			}
+		}
+	}
 
 	return nil
-}
-
-// tryCreateFromConfig attempts to create Redis client from configuration
-func tryCreateFromConfig(pluginName string, database int) redis.UniversalClient {
-	// Enhanced Redis client configuration with connection pool settings
-	log.Warn("Creating Redis client from default config - not recommended for production")
-
-	// Create Redis client with enhanced connection pool settings
-	client := redis.NewClient(&redis.Options{
-		Addr:         "localhost:6379",
-		Password:     "",
-		DB:           database,
-		PoolSize:     10,              // Connection pool size
-		MinIdleConns: 5,               // Minimum idle connections
-		MaxRetries:   3,               // Maximum retry attempts
-		DialTimeout:  5 * time.Second, // Connection timeout
-		ReadTimeout:  3 * time.Second, // Read timeout
-		WriteTimeout: 3 * time.Second, // Write timeout
-		PoolTimeout:  4 * time.Second, // Pool timeout
-	})
-
-	// Test the connection with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		log.Errorf("Failed to connect to Redis: %v", err)
-		err := client.Close()
-		if err != nil {
-			log.Error(err)
-			return nil
-		}
-		return nil
-	}
-
-	log.Info("Successfully connected to Redis with enhanced configuration")
-	return client
-}
-
-// tryCreateClusterClient attempts to create Redis cluster client
-func tryCreateClusterClient(pluginName string, database int) redis.UniversalClient {
-	// Try to create Redis cluster client for high availability
-	log.Info("Attempting to create Redis cluster client")
-
-	// Default cluster addresses - in production, these should come from configuration
-	clusterAddresses := []string{
-		"localhost:7000",
-		"localhost:7001",
-		"localhost:7002",
-	}
-
-	client := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:        clusterAddresses,
-		Password:     "",
-		PoolSize:     10,
-		MinIdleConns: 5,
-		MaxRetries:   3,
-		DialTimeout:  5 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
-		PoolTimeout:  4 * time.Second,
-	})
-
-	// Test cluster connection with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		log.Warnf("Failed to connect to Redis cluster: %v", err)
-		err := client.Close()
-		if err != nil {
-			log.Error(err)
-			return nil
-		}
-		return nil
-	}
-
-	log.Info("Successfully connected to Redis cluster")
-	return client
 }
 
 // DefaultRedisIntegrationConfig returns default Redis integration configuration
 func DefaultRedisIntegrationConfig() *RedisIntegrationConfig {
 	return &RedisIntegrationConfig{
-		RedisPluginName: "default", // Default Redis plugin name
-		Database:        0,         // Default Redis database
+		RedisPluginName: RedisPluginName, // Default Redis plugin shared resource name
+		Database:        0,               // Default Redis database
 		KeyPrefix:       DefaultRedisKeyPrefix,
 	}
 }
@@ -286,7 +222,7 @@ func NewRedisSnowflakePlugin(config *pb.EonId, redisConfig *RedisIntegrationConf
 				return nil, fmt.Errorf("failed to auto-register worker ID: %w", err)
 			}
 
-			log.Infof("Auto-registered worker ID: %d", workerID)
+			lynxlog.Infof("Auto-registered worker ID: %d", workerID)
 		}
 	}
 
@@ -311,7 +247,7 @@ func (r *RedisSnowflakePlugin) GetRedisIntegration() *RedisIntegration {
 func (r *RedisSnowflakePlugin) Shutdown(ctx context.Context) error {
 	if r.workerManager != nil {
 		if err := r.workerManager.UnregisterWorkerID(ctx); err != nil {
-			log.Errorf("Failed to unregister worker ID: %v", err)
+			lynxlog.Errorf("Failed to unregister worker ID: %v", err)
 			return err
 		}
 	}

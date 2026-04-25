@@ -609,7 +609,7 @@ func (p *PlugSnowflake) GetDependencies() []plugins.Dependency {
 }
 
 func resolveRedisClientResource(rt plugins.Runtime, preferredName string) (redis.UniversalClient, string, error) {
-	candidates := []string{preferredName}
+	candidates := []string{preferredName, "redis.provider", RedisPluginName + ".provider"}
 	switch preferredName {
 	case "", RedisLegacyResourceName:
 		candidates = append(candidates, RedisPluginName)
@@ -633,11 +633,18 @@ func resolveRedisClientResource(rt plugins.Runtime, preferredName string) (redis
 			lastErr = err
 			continue
 		}
-		client, ok := resource.(redis.UniversalClient)
-		if !ok {
-			return nil, name, fmt.Errorf("resource %s is not a redis.UniversalClient", name)
+		switch v := resource.(type) {
+		case redis.UniversalClient:
+			return v, name, nil
+		case redisUniversalClientProvider:
+			client, err := v.UniversalClient(context.Background())
+			if err != nil {
+				return nil, name, fmt.Errorf("redis provider %s failed to resolve client: %w", name, err)
+			}
+			return client, name, nil
+		default:
+			return nil, name, fmt.Errorf("resource %s is not a redis.UniversalClient or provider", name)
 		}
-		return client, name, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no redis shared resource candidates matched")

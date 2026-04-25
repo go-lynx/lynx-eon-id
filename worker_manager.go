@@ -2,9 +2,10 @@ package eonId
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"net"
 	"os"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-lynx/lynx/log"
+	"github.com/go-lynx/lynx/pkg/timex"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -52,13 +54,22 @@ func NewWorkerIDManager(redisClient redis.UniversalClient, datacenterID int64, c
 	if config == nil {
 		config = DefaultWorkerManagerConfig()
 	}
+	keyPrefix := NormalizeKeyPrefix(config.KeyPrefix)
+	ttl := config.TTL
+	if ttl <= 0 {
+		ttl = DefaultWorkerIDTTL
+	}
+	heartbeatInterval := config.HeartbeatInterval
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = DefaultHeartbeatInterval
+	}
 
 	mgr := &WorkerIDManager{
 		redisClient:       redisClient,
 		datacenterID:      datacenterID,
-		keyPrefix:         config.KeyPrefix,
-		ttl:               config.TTL,
-		heartbeatInterval: config.HeartbeatInterval,
+		keyPrefix:         keyPrefix,
+		ttl:               ttl,
+		heartbeatInterval: heartbeatInterval,
 		workerID:          -1, // Not assigned yet
 		heartbeatCtx:      nil,
 		heartbeatCancel:   nil,
@@ -78,6 +89,14 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if maxWorkerID < 0 {
+		atomic.StoreInt32(&w.healthy, 0)
+		return -1, fmt.Errorf("max worker ID must be non-negative, got %d", maxWorkerID)
+	}
+	if w.redisClient == nil {
+		atomic.StoreInt32(&w.healthy, 0)
+		return -1, fmt.Errorf("redis client is nil")
+	}
 	if w.registered {
 		return w.workerID, nil // Already registered (workerID can be 0)
 	}
@@ -150,9 +169,15 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 		// SetNX failed, this worker ID is already taken
 		log.Debugf("worker ID %d is taken, attempt %d/%d", workerID, retryCount+1, maxRetries)
 
-		// Backoff sleep: random 10-50ms to prevent retry storm
-		backoff := time.Duration(10+rand.Intn(40)) * time.Millisecond
-		time.Sleep(backoff)
+		// Backoff sleep: random 10-50ms to prevent retry storms.
+		backoff := timex.RandomDuration(10*time.Millisecond, 50*time.Millisecond)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return -1, ctx.Err()
+		}
 	}
 
 	// All worker IDs are taken after a full cycle
@@ -166,6 +191,14 @@ func (w *WorkerIDManager) RegisterSpecificWorkerID(ctx context.Context, workerID
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if workerID < 0 {
+		atomic.StoreInt32(&w.healthy, 0)
+		return fmt.Errorf("worker ID must be non-negative, got %d", workerID)
+	}
+	if w.redisClient == nil {
+		atomic.StoreInt32(&w.healthy, 0)
+		return fmt.Errorf("redis client is nil")
+	}
 	if w.registered {
 		if w.workerID == workerID {
 			return nil // Already registered with this ID
@@ -241,6 +274,15 @@ func (w *WorkerIDManager) startHeartbeatLocked() {
 func (w *WorkerIDManager) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.heartbeatInterval)
 	defer ticker.Stop()
+	defer func() {
+		w.mu.Lock()
+		if w.heartbeatCtx == ctx {
+			w.heartbeatCtx = nil
+			w.heartbeatCancel = nil
+			w.heartbeatRunning = false
+		}
+		w.mu.Unlock()
+	}()
 
 	consecutiveFailures := 0
 	maxConsecutiveFailures := 3
@@ -291,6 +333,10 @@ func (w *WorkerIDManager) heartbeatLoop(ctx context.Context) {
 // avoids overwriting another instance that took the same worker ID after expiry.
 // On failure, clears local state so caller can attempt full re-registration.
 func (w *WorkerIDManager) tryReRegister(ctx context.Context) error {
+	if w.redisClient == nil {
+		return fmt.Errorf("redis client is nil")
+	}
+
 	w.mu.RLock()
 	workerID := w.workerID
 	registered := w.registered
@@ -356,6 +402,10 @@ func (w *WorkerIDManager) tryReRegister(ctx context.Context) error {
 // sendHeartbeat sends heartbeat to maintain worker ID key TTL
 // Uses Lua script to atomically verify instanceID and refresh TTL
 func (w *WorkerIDManager) sendHeartbeat() error {
+	if w.redisClient == nil {
+		return fmt.Errorf("redis client is nil")
+	}
+
 	w.mu.RLock()
 	workerID := w.workerID
 	registerTime := w.registerTime
@@ -421,6 +471,19 @@ func (w *WorkerIDManager) UnregisterWorkerID(ctx context.Context) error {
 		w.mu.Unlock()
 		return nil // Not registered
 	}
+	if w.redisClient == nil {
+		atomic.StoreInt32(&w.healthy, 0)
+		if w.heartbeatCancel != nil {
+			w.heartbeatCancel()
+			w.heartbeatCancel = nil
+			w.heartbeatCtx = nil
+			w.heartbeatRunning = false
+		}
+		w.workerID = -1
+		w.registered = false
+		w.mu.Unlock()
+		return fmt.Errorf("redis client is nil")
+	}
 
 	workerID := w.workerID
 	instanceID := w.instanceID
@@ -473,6 +536,10 @@ func (w *WorkerIDManager) GetWorkerID() int64 {
 // GetRegisteredWorkers returns all registered workers.
 // Stale registry members (worker key expired or missing, e.g. after power loss) are removed from the set (lazy cleanup).
 func (w *WorkerIDManager) GetRegisteredWorkers(ctx context.Context) ([]WorkerInfo, error) {
+	if w.redisClient == nil {
+		return nil, fmt.Errorf("redis client is nil")
+	}
+
 	registryKey := w.getRegistryKey()
 
 	members, err := w.redisClient.SMembers(ctx, registryKey).Result()
@@ -550,8 +617,19 @@ func (w *WorkerIDManager) getRegistryKey() string {
 func (w *WorkerIDManager) generateInstanceID() string {
 	// Include PID and random to reduce collision probability under high concurrency
 	pid := os.Getpid()
-	r := rand.Intn(100000)
+	r := secureInt63n(100000)
 	return fmt.Sprintf("instance-%d-%d-%d-%d-%d", time.Now().UnixNano(), w.datacenterID, pid, time.Now().UnixMicro()%10000, r)
+}
+
+func secureInt63n(max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	n, err := crand.Int(crand.Reader, big.NewInt(max))
+	if err != nil {
+		return time.Now().UnixNano() % max
+	}
+	return n.Int64()
 }
 
 // WorkerInfo represents information about a registered worker
