@@ -289,7 +289,7 @@ func (p *PlugSnowflake) Weight() int {
 }
 
 // UpdateConfiguration updates the plugin configuration
-func (p *PlugSnowflake) UpdateConfiguration(config interface{}) error {
+func (p *PlugSnowflake) UpdateConfiguration(config any) error {
 	if conf, ok := config.(*pb.EonId); ok {
 		p.mu.Lock()
 		defer p.mu.Unlock()

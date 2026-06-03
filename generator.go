@@ -141,6 +141,8 @@ func (g *Generator) GenerateID() (int64, error) {
 			if g.metrics != nil {
 				g.metrics.RecordIDGeneration(latency, cacheHit)
 			}
+			promIDsGeneratedTotal.Inc()
+			promGenerationLatency.Observe(latency.Seconds())
 			return id, nil
 		}
 
@@ -163,6 +165,7 @@ func (g *Generator) GenerateID() (int64, error) {
 	if g.metrics != nil {
 		g.metrics.RecordError("generation")
 	}
+	promGenerationErrorsTotal.Inc()
 	return 0, fmt.Errorf("failed to generate ID after %d retries", maxRetries)
 }
 
@@ -195,6 +198,10 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, bool, error) {
 		drift := time.Duration(driftMs) * time.Millisecond
 
 		atomic.AddInt64(&g.clockBackwardCount, 1)
+		if g.metrics != nil {
+			g.metrics.RecordClockDrift()
+		}
+		promClockDriftEventsTotal.Inc()
 
 		switch g.clockDriftAction {
 		case ClockDriftActionError:
@@ -251,6 +258,10 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, bool, error) {
 				g.sequence = (g.sequence + 1) & g.maxSequence
 				if g.sequence == 0 {
 					// Sequence overflow - return signal to wait
+					if g.metrics != nil {
+						g.metrics.RecordSequenceOverflow()
+					}
+					promSequenceOverflowsTotal.Inc()
 					return 0, true, 0, false, nil
 				}
 			}
@@ -259,6 +270,10 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, bool, error) {
 			g.sequence = (g.sequence + 1) & g.maxSequence
 			if g.sequence == 0 {
 				// Sequence overflow - return signal to wait outside lock
+				if g.metrics != nil {
+					g.metrics.RecordSequenceOverflow()
+				}
+				promSequenceOverflowsTotal.Inc()
 				return 0, true, 0, false, nil
 			}
 		}

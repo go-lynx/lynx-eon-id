@@ -397,6 +397,11 @@ func (rl *RateLimiter) startCleanup() {
 	rl.mu.Unlock()
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Infof("rate limiter cleanup goroutine recovered from panic: %v", r)
+			}
+		}()
 		for {
 			select {
 			case <-rl.cleanupTicker.C:

@@ -30,19 +30,19 @@ const (
 type FaultInjector struct {
 	mu           sync.RWMutex
 	activeFaults map[FaultType]bool
-	faultConfig  map[FaultType]interface{}
+	faultConfig  map[FaultType]any
 }
 
 // NewFaultInjector creates a new fault injector
 func NewFaultInjector() *FaultInjector {
 	return &FaultInjector{
 		activeFaults: make(map[FaultType]bool),
-		faultConfig:  make(map[FaultType]interface{}),
+		faultConfig:  make(map[FaultType]any),
 	}
 }
 
 // InjectFault activates a specific fault type
-func (fi *FaultInjector) InjectFault(faultType FaultType, config interface{}) {
+func (fi *FaultInjector) InjectFault(faultType FaultType, config any) {
 	fi.mu.Lock()
 	defer fi.mu.Unlock()
 	fi.activeFaults[faultType] = true
@@ -65,7 +65,7 @@ func (fi *FaultInjector) IsFaultActive(faultType FaultType) bool {
 }
 
 // GetFaultConfig returns the configuration for a fault
-func (fi *FaultInjector) GetFaultConfig(faultType FaultType) interface{} {
+func (fi *FaultInjector) GetFaultConfig(faultType FaultType) any {
 	fi.mu.RLock()
 	defer fi.mu.RUnlock()
 	return fi.faultConfig[faultType]
@@ -79,7 +79,7 @@ func TestClockSkewFault(t *testing.T) {
 	injector := NewFaultInjector()
 
 	// Simulate clock going backwards
-	injector.InjectFault(FaultTypeClockSkew, map[string]interface{}{
+	injector.InjectFault(FaultTypeClockSkew, map[string]any{
 		"skew_ms": -1000, // 1 second backwards
 	})
 
@@ -110,7 +110,7 @@ func TestMemoryPressureFault(t *testing.T) {
 	require.NoError(t, err)
 
 	injector := NewFaultInjector()
-	injector.InjectFault(FaultTypeMemoryPressure, map[string]interface{}{
+	injector.InjectFault(FaultTypeMemoryPressure, map[string]any{
 		"allocation_mb": 100, // Allocate 100MB
 	})
 
@@ -157,7 +157,7 @@ func TestHighLatencyFault(t *testing.T) {
 	require.NoError(t, err)
 
 	injector := NewFaultInjector()
-	injector.InjectFault(FaultTypeHighLatency, map[string]interface{}{
+	injector.InjectFault(FaultTypeHighLatency, map[string]any{
 		"latency_ms": 100, // 100ms artificial latency
 	})
 
@@ -171,7 +171,7 @@ func TestHighLatencyFault(t *testing.T) {
 
 		// Inject artificial latency
 		if injector.IsFaultActive(FaultTypeHighLatency) {
-			config := injector.GetFaultConfig(FaultTypeHighLatency).(map[string]interface{})
+			config := injector.GetFaultConfig(FaultTypeHighLatency).(map[string]any)
 			latencyMs := config["latency_ms"].(int)
 			time.Sleep(time.Duration(latencyMs) * time.Millisecond)
 		}
@@ -204,8 +204,8 @@ func TestConcurrentFaultInjection(t *testing.T) {
 	injector := NewFaultInjector()
 
 	// Inject multiple faults simultaneously
-	injector.InjectFault(FaultTypeHighLatency, map[string]interface{}{"latency_ms": 10})
-	injector.InjectFault(FaultTypeMemoryPressure, map[string]interface{}{"allocation_mb": 50})
+	injector.InjectFault(FaultTypeHighLatency, map[string]any{"latency_ms": 10})
+	injector.InjectFault(FaultTypeMemoryPressure, map[string]any{"allocation_mb": 50})
 
 	var wg sync.WaitGroup
 	var successCount int64
@@ -222,7 +222,7 @@ func TestConcurrentFaultInjection(t *testing.T) {
 			for j := 0; j < requestsPerWorker; j++ {
 				// Inject latency if fault is active
 				if injector.IsFaultActive(FaultTypeHighLatency) {
-					config := injector.GetFaultConfig(FaultTypeHighLatency).(map[string]interface{})
+					config := injector.GetFaultConfig(FaultTypeHighLatency).(map[string]any)
 					latencyMs := config["latency_ms"].(int)
 					time.Sleep(time.Duration(latencyMs) * time.Millisecond)
 				}
@@ -261,7 +261,7 @@ func TestRedisFailureFault(t *testing.T) {
 	require.NoError(t, err)
 
 	injector := NewFaultInjector()
-	injector.InjectFault(FaultTypeRedisFailure, map[string]interface{}{
+	injector.InjectFault(FaultTypeRedisFailure, map[string]any{
 		"failure_type": "connection_timeout",
 		"duration_ms":  5000,
 	})
@@ -292,7 +292,7 @@ func TestSystemOverloadFault(t *testing.T) {
 	require.NoError(t, err)
 
 	injector := NewFaultInjector()
-	injector.InjectFault(FaultTypeSystemOverload, map[string]interface{}{
+	injector.InjectFault(FaultTypeSystemOverload, map[string]any{
 		"cpu_load":    90, // 90% CPU load
 		"memory_load": 85, // 85% memory load
 		"duration_s":  10, // 10 seconds
@@ -363,7 +363,7 @@ func TestNetworkPartitionFault(t *testing.T) {
 	require.NoError(t, err)
 
 	injector := NewFaultInjector()
-	injector.InjectFault(FaultTypeNetworkPartition, map[string]interface{}{
+	injector.InjectFault(FaultTypeNetworkPartition, map[string]any{
 		"partition_type": "split_brain",
 		"duration_s":     30,
 	})
@@ -403,7 +403,7 @@ func TestFaultRecovery(t *testing.T) {
 	}
 
 	// Phase 2: Inject fault
-	injector.InjectFault(FaultTypeHighLatency, map[string]interface{}{"latency_ms": 50})
+	injector.InjectFault(FaultTypeHighLatency, map[string]any{"latency_ms": 50})
 
 	var faultIDs []int64
 	for i := 0; i < 100; i++ {
@@ -451,12 +451,12 @@ func TestCascadingFailures(t *testing.T) {
 	// Simulate cascading failures
 	failures := []struct {
 		faultType FaultType
-		config    interface{}
+		config    any
 		delay     time.Duration
 	}{
-		{FaultTypeRedisFailure, map[string]interface{}{"failure_type": "timeout"}, 0},
-		{FaultTypeHighLatency, map[string]interface{}{"latency_ms": 100}, 2 * time.Second},
-		{FaultTypeMemoryPressure, map[string]interface{}{"allocation_mb": 50}, 4 * time.Second},
+		{FaultTypeRedisFailure, map[string]any{"failure_type": "timeout"}, 0},
+		{FaultTypeHighLatency, map[string]any{"latency_ms": 100}, 2 * time.Second},
+		{FaultTypeMemoryPressure, map[string]any{"allocation_mb": 50}, 4 * time.Second},
 	}
 
 	var wg sync.WaitGroup
@@ -556,7 +556,7 @@ func (meg *MockErrorGenerator) GenerateID() (int64, error) {
 
 func (meg *MockErrorGenerator) shouldFail() bool {
 	rate := meg.failureRate
-	if config, ok := meg.injector.GetFaultConfig(FaultTypeSystemOverload).(map[string]interface{}); ok {
+	if config, ok := meg.injector.GetFaultConfig(FaultTypeSystemOverload).(map[string]any); ok {
 		if configuredRate, ok := config["failure_rate"]; ok {
 			switch value := configuredRate.(type) {
 			case float64:
@@ -603,7 +603,7 @@ func TestErrorRecovery(t *testing.T) {
 	}
 
 	// Enable system overload fault
-	injector.InjectFault(FaultTypeSystemOverload, map[string]interface{}{
+	injector.InjectFault(FaultTypeSystemOverload, map[string]any{
 		"failure_rate": 0.1,
 	})
 

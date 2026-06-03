@@ -19,7 +19,7 @@ import (
 )
 
 // redisResultToInt64 converts Redis Lua script result to int64 to avoid panic when the client returns float64.
-func redisResultToInt64(v interface{}) (int64, error) {
+func redisResultToInt64(v any) (int64, error) {
 	switch n := v.(type) {
 	case int64:
 		return n, nil
@@ -160,6 +160,7 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 			_ = w.redisClient.SAdd(ctx, registryKey, fmt.Sprintf("%d:%d", w.datacenterID, workerID))
 
 			atomic.StoreInt32(&w.healthy, 1)
+			promWorkerIDGauge.Set(float64(workerID))
 			w.startHeartbeatLocked() // Start heartbeat to maintain key TTL
 
 			log.Infof("successfully registered worker ID %d (datacenter: %d, attempts: %d)", workerID, w.datacenterID, retryCount+1)
@@ -182,6 +183,7 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 
 	// All worker IDs are taken after a full cycle
 	atomic.StoreInt32(&w.healthy, 0)
+	promWorkerIDFailuresTotal.Inc()
 	return -1, fmt.Errorf("all %d worker IDs are occupied, registration failed", totalWorkerIDs)
 }
 
@@ -242,6 +244,7 @@ func (w *WorkerIDManager) RegisterSpecificWorkerID(ctx context.Context, workerID
 	_ = w.redisClient.SAdd(ctx, registryKey, fmt.Sprintf("%d:%d", w.datacenterID, workerID))
 
 	atomic.StoreInt32(&w.healthy, 1)
+	promWorkerIDGauge.Set(float64(workerID))
 	w.startHeartbeatLocked()
 
 	log.Infof("successfully registered specific worker ID %d (datacenter: %d)", workerID, w.datacenterID)
@@ -272,6 +275,12 @@ func (w *WorkerIDManager) startHeartbeatLocked() {
 
 // heartbeatLoop starts the heartbeat process with context cancellation.
 func (w *WorkerIDManager) heartbeatLoop(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("eon-id heartbeat loop recovered from panic: %v", r)
+			atomic.StoreInt32(&w.healthy, 0)
+		}
+	}()
 	ticker := time.NewTicker(w.heartbeatInterval)
 	defer ticker.Stop()
 	defer func() {
@@ -294,6 +303,7 @@ func (w *WorkerIDManager) heartbeatLoop(ctx context.Context) {
 		case <-ticker.C:
 			if err := w.sendHeartbeat(); err != nil {
 				consecutiveFailures++
+				promWorkerIDHeartbeatFailuresTotal.Inc()
 				log.Warnf("eon-id worker heartbeat failed (attempt %d/%d): %v",
 					consecutiveFailures, maxConsecutiveFailures, err)
 
@@ -491,6 +501,7 @@ func (w *WorkerIDManager) UnregisterWorkerID(ctx context.Context) error {
 
 	// Mark as unhealthy and stop heartbeat first
 	atomic.StoreInt32(&w.healthy, 0)
+	promWorkerIDGauge.Set(-1)
 	if w.heartbeatCancel != nil {
 		w.heartbeatCancel()
 		w.heartbeatCancel = nil

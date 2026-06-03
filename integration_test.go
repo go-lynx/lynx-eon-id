@@ -25,7 +25,7 @@ func NewMockRedisClient() *MockRedisClient {
 	}
 }
 
-func (m *MockRedisClient) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
+func (m *MockRedisClient) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.data[key] = fmt.Sprintf("%v", value)
