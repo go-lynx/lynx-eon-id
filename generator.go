@@ -9,6 +9,17 @@ import (
 	pb "github.com/go-lynx/lynx-eon-id/conf"
 )
 
+const (
+	// maxGenerateWaitBudget caps the total real time a single GenerateID call will spend
+	// waiting (for sequence overflow to clear or a bounded backward-drift wait) before
+	// returning an error. Generous enough to ride out a sequence-overflow burst across
+	// several milliseconds, but still bounded so callers never block unboundedly.
+	maxGenerateWaitBudget = 2 * time.Second
+	// sequenceOverflowSpinSleep is the short sleep used while spinning to the next
+	// millisecond after a per-ms sequence overflow.
+	sequenceOverflowSpinSleep = 50 * time.Microsecond
+)
+
 // NewSnowflakeGeneratorWithConfig creates an Eon-ID generator from protobuf config.
 func NewSnowflakeGeneratorWithConfig(config *pb.EonId) (*Generator, error) {
 	if config == nil {
@@ -119,9 +130,15 @@ func NewSnowflakeGeneratorCore(datacenterID, workerID int64, config *GeneratorCo
 // This method is optimized to minimize lock holding time - no sleep while holding lock
 func (g *Generator) GenerateID() (int64, error) {
 	startTime := time.Now()
-	maxRetries := 10
 
-	for retry := 0; retry < maxRetries; retry++ {
+	// Bound retries by a real wall-clock budget rather than a tiny fixed retry count.
+	// A sequence overflow simply means this millisecond's sequence space is exhausted;
+	// under legitimate high load we must spin/block to the NEXT millisecond instead of
+	// erroring after ~1ms. The deadline caps how long we are willing to wait so the call
+	// can never block unboundedly (e.g. on a large backward clock drift in Wait mode).
+	deadline := startTime.Add(maxGenerateWaitBudget)
+
+	for {
 		// Check shutdown before each attempt to exit quickly
 		if atomic.LoadInt32(&g.isShuttingDownAtomic) != 0 {
 			if g.metrics != nil {
@@ -154,19 +171,29 @@ func (g *Generator) GenerateID() (int64, error) {
 			}
 			return 0, fmt.Errorf("generator is shutting down")
 		}
+
+		if time.Now().After(deadline) {
+			if g.metrics != nil {
+				g.metrics.RecordError("generation")
+			}
+			promGenerationErrorsTotal.Inc()
+			return 0, fmt.Errorf("failed to generate ID within %v budget", maxGenerateWaitBudget)
+		}
+
 		if waitDuration > 0 {
-			time.Sleep(waitDuration)
+			// Backward-drift wait: sleep the requested duration but never past the deadline.
+			if remaining := time.Until(deadline); waitDuration > remaining {
+				waitDuration = remaining
+			}
+			if waitDuration > 0 {
+				time.Sleep(waitDuration)
+			}
 		} else {
-			// Minimal wait for sequence overflow
-			time.Sleep(100 * time.Microsecond)
+			// Sequence overflow: spin/block to the next millisecond. A short sleep yields
+			// the CPU while we wait for the wall clock to advance past the current ms.
+			time.Sleep(sequenceOverflowSpinSleep)
 		}
 	}
-
-	if g.metrics != nil {
-		g.metrics.RecordError("generation")
-	}
-	promGenerationErrorsTotal.Inc()
-	return 0, fmt.Errorf("failed to generate ID after %d retries", maxRetries)
 }
 
 // tryGenerateID attempts to generate an ID, returns (id, needWait, waitDuration, cacheHit, error)
@@ -184,6 +211,10 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, bool, error) {
 	}
 
 	timestamp := g.getCurrentTimestamp()
+	// ignoreMode is set when a backward drift is being absorbed via ClockDriftActionIgnore;
+	// it changes how a sequence overflow is resolved (advance synthetic timestamp +1
+	// instead of waiting for the real clock).
+	ignoreMode := false
 
 	// Check for clock drift (no sleep in this check)
 	if g.enableClockDriftProtection {
@@ -235,9 +266,14 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, bool, error) {
 					Drift:         drift,
 				}
 			}
-			// Use last timestamp + 1 to ensure monotonicity
-			timestamp = g.lastTimestamp + 1
-			g.sequence = 0
+			// Stay ON the last timestamp and consume the per-ms sequence space rather
+			// than immediately advancing the synthetic timestamp. Only on sequence
+			// overflow do we bump +1 (handled below via ignoreMode), which keeps the
+			// synthetic timestamp from outrunning real time and prevents the duplicate
+			// IDs that occur when a freely-advanced timestamp collides with real time
+			// once the real clock catches up.
+			ignoreMode = true
+			timestamp = g.lastTimestamp
 		default:
 			return 0, false, 0, false, fmt.Errorf("unknown clock drift action: %s", g.clockDriftAction)
 		}
@@ -246,8 +282,10 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, bool, error) {
 	// If same millisecond, increment sequence
 	cacheHit := false
 	if timestamp == g.lastTimestamp {
-		if g.enableSequenceCache && g.cacheIndex < len(g.sequenceCache) && g.cacheIndex >= 0 {
-			// Use cached sequence if available and valid
+		if g.enableSequenceCache && g.cacheIndex >= 0 && g.cacheIndex < g.cacheValidCount {
+			// Only consume entries within the valid-count for THIS millisecond; never
+			// trust slice contents beyond cacheValidCount (they may be stale from a
+			// previous ms).
 			cachedSeq := g.sequenceCache[g.cacheIndex]
 			g.cacheIndex++
 			if cachedSeq > 0 && cachedSeq <= g.maxSequence {
@@ -257,24 +295,22 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, bool, error) {
 				// Invalid cached sequence, fall back to normal increment
 				g.sequence = (g.sequence + 1) & g.maxSequence
 				if g.sequence == 0 {
-					// Sequence overflow - return signal to wait
-					if g.metrics != nil {
-						g.metrics.RecordSequenceOverflow()
+					if next, ok := g.handleSequenceOverflow(ignoreMode); ok {
+						timestamp = next
+					} else {
+						return 0, true, 0, false, nil
 					}
-					promSequenceOverflowsTotal.Inc()
-					return 0, true, 0, false, nil
 				}
 			}
 		} else {
 			// Cache exhausted or disabled, use normal increment
 			g.sequence = (g.sequence + 1) & g.maxSequence
 			if g.sequence == 0 {
-				// Sequence overflow - return signal to wait outside lock
-				if g.metrics != nil {
-					g.metrics.RecordSequenceOverflow()
+				if next, ok := g.handleSequenceOverflow(ignoreMode); ok {
+					timestamp = next
+				} else {
+					return 0, true, 0, false, nil
 				}
-				promSequenceOverflowsTotal.Inc()
-				return 0, true, 0, false, nil
 			}
 		}
 	} else {
@@ -299,17 +335,47 @@ func (g *Generator) tryGenerateID() (int64, bool, time.Duration, bool, error) {
 	return id, false, 0, cacheHit, nil
 }
 
+// handleSequenceOverflow records overflow metrics and decides how to resolve a
+// per-millisecond sequence overflow.
+//
+//   - Normal mode: returns (0, false) so the caller waits for the next real millisecond.
+//   - Ignore mode (absorbing backward drift): the real clock is behind lastTimestamp, so
+//     waiting cannot help. Advance the synthetic timestamp by exactly +1ms, reset the
+//     sequence and refill the cache, and return (next, true). The synthetic timestamp is
+//     bounded by maxIgnoreBackwardDriftMs ahead of real time elsewhere, so it never
+//     freely outruns real time per call: it only advances when a full millisecond's
+//     sequence space is genuinely exhausted.
+//
+// Caller must hold g.mu.
+func (g *Generator) handleSequenceOverflow(ignoreMode bool) (int64, bool) {
+	if g.metrics != nil {
+		g.metrics.RecordSequenceOverflow()
+	}
+	promSequenceOverflowsTotal.Inc()
+
+	if !ignoreMode {
+		return 0, false
+	}
+
+	// Advance synthetic timestamp by one millisecond and start a fresh sequence space.
+	next := g.lastTimestamp + 1
+	g.sequence = 0
+	if g.enableSequenceCache {
+		g.refillSequenceCache()
+	}
+	return next, true
+}
+
 // checkClockDriftNoSleep checks for clock drift without sleeping
 func (g *Generator) checkClockDriftNoSleep(currentTimestamp int64) error {
 	if g.lastTimestamp == -1 {
 		return nil // First call, no drift to check
 	}
 
-	now := time.Now()
-	if now.Sub(g.lastClockCheck) < time.Second {
-		return nil // Skip check if checked recently
-	}
-	g.lastClockCheck = now
+	// Record the check time (used by IsHealthy as a liveness hint) but do NOT
+	// time-throttle the correctness check: a large forward jump within a single second
+	// must still be flagged, so drift is evaluated on every call.
+	g.lastClockCheck = time.Now()
 
 	driftMs := currentTimestamp - g.lastTimestamp
 	if driftMs < 0 {
@@ -341,6 +407,18 @@ func (g *Generator) GenerateIDWithMetadata() (int64, *SID, error) {
 	}
 
 	return id, metadata, nil
+}
+
+// SetWorkerID atomically updates the worker ID used for subsequent ID generation.
+// Used by the worker manager when a fresh worker ID is acquired after the previous one
+// was taken or expired. Validates against maxWorkerID to never emit an out-of-range id.
+func (g *Generator) SetWorkerID(workerID int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if workerID < 0 || workerID > g.maxWorkerID {
+		return
+	}
+	g.workerID = workerID
 }
 
 // GetStats returns statistics about the generator
@@ -458,6 +536,7 @@ func (g *Generator) refillSequenceCache() {
 		actualCacheSize = maxValidCount
 	}
 
+	validCount := 0
 	for i := 0; i < actualCacheSize; i++ {
 		seq := int64(i + 1) // Start from 1, not 0
 		if seq > g.maxSequence {
@@ -465,10 +544,15 @@ func (g *Generator) refillSequenceCache() {
 			break
 		}
 		g.sequenceCache[i] = seq
+		validCount++
 	}
 
-	// Note: We keep the original slice size, but only use actualCacheSize entries
-	// The cacheIndex check in GenerateID ensures we don't access beyond actualCacheSize
+	// Zero out every unused slot so no stale sequence from a previous millisecond can
+	// ever be read back; only [0, cacheValidCount) is consumed by the generation path.
+	for i := validCount; i < len(g.sequenceCache); i++ {
+		g.sequenceCache[i] = 0
+	}
+	g.cacheValidCount = validCount
 
 	// Reset cache index
 	g.cacheIndex = 0

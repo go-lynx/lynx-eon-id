@@ -110,6 +110,17 @@ func (p *PlugSnowflake) startupTasksContext(parentCtx context.Context) error {
 	ctx, cancel := p.createTimeoutContext(parentCtx, 10*time.Second)
 	defer cancel()
 
+	maxWorkerID := int64((1 << p.conf.WorkerIdBits) - 1)
+	if maxWorkerID <= 0 {
+		maxWorkerID = 31
+	}
+	// Record the full worker ID range so the heartbeat recovery path can acquire a fresh
+	// worker ID via full re-registration even when the initial registration was a
+	// specific worker ID.
+	p.workerManager.mu.Lock()
+	p.workerManager.maxWorkerID = maxWorkerID
+	p.workerManager.mu.Unlock()
+
 	if p.conf.WorkerId > 0 {
 		if err := p.workerManager.RegisterSpecificWorkerID(ctx, int64(p.conf.WorkerId)); err == nil {
 			lynxlog.Infof("registered specific worker ID: %d", p.conf.WorkerId)
@@ -119,10 +130,6 @@ func (p *PlugSnowflake) startupTasksContext(parentCtx context.Context) error {
 		}
 	}
 
-	maxWorkerID := int64((1 << p.conf.WorkerIdBits) - 1)
-	if maxWorkerID == 0 {
-		maxWorkerID = 31
-	}
 	workerID, err := p.workerManager.RegisterWorkerID(ctx, maxWorkerID)
 	if err != nil {
 		return fmt.Errorf("failed to auto-register worker ID: %w", err)

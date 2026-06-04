@@ -65,6 +65,23 @@ type WorkerIDManager struct {
 	serviceVersion string // Application version from lynx (e.g. v1.0.0)
 	// Health state - used to stop ID generation when heartbeat fails
 	healthy int32 // atomic: 1=healthy, 0=unhealthy
+	// shuttingDown is set (atomic) by UnregisterWorkerID so any in-flight background
+	// recovery retry loop (reacquireFreshWorkerID) stops instead of resurrecting state
+	// after a graceful shutdown.
+	shuttingDown int32 // atomic: 1=shutting down, 0=running
+	// recovering guards against more than one concurrent fresh-worker-ID recovery loop.
+	recovering int32 // atomic: 1=a recovery retry loop is active
+	// leaseDeadline is the monotonic lease deadline (UnixNano). ID generation must be
+	// gated on now <= leaseDeadline: the worker key TTL expires at this point and another
+	// instance can grab the same worker ID, so we must stop generating before then.
+	// Set on register/heartbeat success to now+ttl; checked atomically in IsHealthy.
+	leaseDeadline int64 // atomic: time.Time(...).UnixNano()
+	// maxWorkerID preserved so a failed-heartbeat path can acquire a fresh worker ID
+	// via a full re-registration when the current one is taken/expired.
+	maxWorkerID int64
+	// onWorkerIDChange is invoked (if set) whenever the worker ID changes after a full
+	// re-registration, so the generator's workerID can be updated atomically.
+	onWorkerIDChange func(newWorkerID int64)
 	// Mutex for state management
 	mu sync.RWMutex
 }
@@ -107,6 +124,10 @@ type Generator struct {
 	sequenceCache       []int64
 	cacheIndex          int
 	cacheSize           int
+	// cacheValidCount is the number of valid pre-generated sequences in sequenceCache
+	// for the CURRENT millisecond. Only entries [0, cacheValidCount) may be consumed;
+	// slice contents beyond this are never trusted (they may be stale from a prior ms).
+	cacheValidCount int
 
 	// Shutdown state (isShuttingDownAtomic allows lock-free check in retry loop)
 	isShuttingDown       bool
@@ -429,6 +450,14 @@ func (p *PlugSnowflake) InitializeResources(rt plugins.Runtime) error {
 	p.generator, err = NewSnowflakeGeneratorCore(int64(conf.DatacenterId), int64(conf.WorkerId), generatorConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create eon-id generator: %w", err)
+	}
+
+	// Wire the generator's worker ID to follow any fresh worker ID acquired by the
+	// worker manager after a taken/expired recovery, so generated IDs always carry the
+	// id this instance actually owns.
+	generator := p.generator
+	p.workerManager.onWorkerIDChange = func(newWorkerID int64) {
+		generator.SetWorkerID(newWorkerID)
 	}
 	return nil
 }
