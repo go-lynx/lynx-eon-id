@@ -97,9 +97,17 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 		atomic.StoreInt32(&w.healthy, 0)
 		return -1, fmt.Errorf("redis client is nil")
 	}
+	if atomic.LoadInt32(&w.shuttingDown) == 1 {
+		atomic.StoreInt32(&w.healthy, 0)
+		return -1, fmt.Errorf("worker manager is shutting down")
+	}
 	if w.registered {
 		return w.workerID, nil // Already registered (workerID can be 0)
 	}
+
+	// Preserve maxWorkerID so the heartbeat path can acquire a fresh worker ID via a
+	// full re-registration if the current one is later taken/expired.
+	w.maxWorkerID = maxWorkerID
 
 	counterKey := w.getCounterKey()
 	totalWorkerIDs := maxWorkerID + 1 // Total available worker IDs (0 to maxWorkerID)
@@ -154,14 +162,22 @@ func (w *WorkerIDManager) RegisterWorkerID(ctx context.Context, maxWorkerID int6
 			w.workerID = workerID
 			w.registered = true
 			w.registerTime = now
+			w.setLeaseDeadline(now)
 
 			// Add to registry set (for monitoring)
 			registryKey := w.getRegistryKey()
 			_ = w.redisClient.SAdd(ctx, registryKey, fmt.Sprintf("%d:%d", w.datacenterID, workerID))
 
-			atomic.StoreInt32(&w.healthy, 1)
+			// Push the (possibly fresh) worker ID into the generator BEFORE marking the
+			// worker healthy and starting the heartbeat, so no ID is ever generated with a
+			// stale worker id once health is restored. Captured under w.mu (held here).
+			if onChange := w.onWorkerIDChange; onChange != nil {
+				onChange(workerID)
+			}
+
 			promWorkerIDGauge.Set(float64(workerID))
-			w.startHeartbeatLocked() // Start heartbeat to maintain key TTL
+			w.startHeartbeatLocked()         // Start heartbeat to maintain key TTL
+			atomic.StoreInt32(&w.healthy, 1) // Mark healthy only after generator is updated
 
 			log.Infof("successfully registered worker ID %d (datacenter: %d, attempts: %d)", workerID, w.datacenterID, retryCount+1)
 			return workerID, nil
@@ -239,6 +255,7 @@ func (w *WorkerIDManager) RegisterSpecificWorkerID(ctx context.Context, workerID
 	w.workerID = workerID
 	w.registered = true
 	w.registerTime = now
+	w.setLeaseDeadline(now)
 
 	registryKey := w.getRegistryKey()
 	_ = w.redisClient.SAdd(ctx, registryKey, fmt.Sprintf("%d:%d", w.datacenterID, workerID))
@@ -251,9 +268,30 @@ func (w *WorkerIDManager) RegisterSpecificWorkerID(ctx context.Context, workerID
 	return nil
 }
 
-// IsHealthy returns whether the worker manager is healthy (heartbeat is working)
+// setLeaseDeadline records the monotonic lease deadline as now+ttl. Called on every
+// successful register/heartbeat so IsHealthy can refuse generation before the worker
+// key TTL expires (and another instance could grab the same worker ID).
+func (w *WorkerIDManager) setLeaseDeadline(now time.Time) {
+	atomic.StoreInt64(&w.leaseDeadline, now.Add(w.ttl).UnixNano())
+}
+
+// IsHealthy returns whether the worker manager is healthy (heartbeat is working).
+// Health requires BOTH the healthy flag (heartbeat has not failed) AND that we are
+// still within the lease window (now <= leaseDeadline). The lease gate is proactive:
+// even if a beat has not yet been observed to fail, once the lease deadline passes the
+// worker key may have expired and been taken by another instance, so generation must
+// stop immediately to avoid cross-instance duplicate IDs.
 func (w *WorkerIDManager) IsHealthy() bool {
-	return atomic.LoadInt32(&w.healthy) == 1
+	if atomic.LoadInt32(&w.healthy) != 1 {
+		return false
+	}
+	deadline := atomic.LoadInt64(&w.leaseDeadline)
+	if deadline != 0 && time.Now().UnixNano() > deadline {
+		// Lease expired without a successful renewal in time; treat as unhealthy now.
+		atomic.StoreInt32(&w.healthy, 0)
+		return false
+	}
+	return true
 }
 
 // startHeartbeatLocked starts the heartbeat if not running.
@@ -387,25 +425,154 @@ func (w *WorkerIDManager) tryReRegister(ctx context.Context) error {
 	}
 	switch code {
 	case 1:
+		// Same worker ID refreshed; extend the lease deadline.
+		w.setLeaseDeadline(time.Now())
 		return nil
 	case 0:
-		// Another instance took our worker ID; clear state for full re-registration
-		w.mu.Lock()
-		w.workerID = -1
-		w.registered = false
-		w.mu.Unlock()
-		return fmt.Errorf("worker ID %d was taken by another instance", workerID)
+		// Another instance took our worker ID; we can no longer safely use it.
+		// Fall back to a full registration to acquire a FRESH worker ID rather than
+		// permanently bricking generation on this id.
+		log.Warnf("worker ID %d was taken by another instance, acquiring a fresh worker ID", workerID)
+		return w.reacquireFreshWorkerID(workerID)
 	case -1:
-		// Key expired; clear state for full re-registration
-		w.mu.Lock()
-		w.workerID = -1
-		w.registered = false
-		w.mu.Unlock()
-		return fmt.Errorf("worker ID %d key has expired", workerID)
+		// Key expired (e.g. sustained Redis outage). The id may now be claimable by
+		// anyone, so acquire a fresh worker ID via full registration.
+		log.Warnf("worker ID %d key expired, acquiring a fresh worker ID", workerID)
+		return w.reacquireFreshWorkerID(workerID)
 	case -2:
 		return fmt.Errorf("worker ID %d has invalid JSON format", workerID)
 	default:
 		return fmt.Errorf("re-register returned unknown status: %d", code)
+	}
+}
+
+// reacquireFreshWorkerID clears the local registration state and performs a full
+// RegisterWorkerID to obtain a brand-new worker ID. RegisterWorkerID updates the
+// generator's worker ID (via onWorkerIDChange) BEFORE marking the worker healthy and
+// restarting the heartbeat, so generation is never permanently bricked and never emits
+// an ID with a stale/unowned worker id.
+//
+// IMPORTANT: the caller (heartbeatLoop -> tryReRegister) passes the heartbeat ctx, which
+// this function is about to cancel. We MUST NOT derive the registration context from it,
+// or registration would fail immediately with context.Canceled. We use a fresh,
+// independent context off context.Background() with a bounded timeout instead.
+func (w *WorkerIDManager) reacquireFreshWorkerID(previousWorkerID int64) error {
+	// Reset state so RegisterWorkerID will run its acquisition loop. Mark unhealthy and
+	// clear the lease deadline so IsHealthy blocks generation while recovery is in
+	// progress. Stop the current heartbeat loop here; RegisterWorkerID starts a fresh
+	// one on success. We must drop w.mu before calling heartbeatCancel's callback path
+	// is unnecessary, but cancelling the context itself does not need a lock held by the
+	// loop, so it is safe to cancel under w.mu (the loop only takes w.mu in its deferred
+	// cleanup, which guards on heartbeatCtx == ctx and will be a no-op once we clear it).
+	w.mu.Lock()
+	atomic.StoreInt32(&w.healthy, 0)
+	atomic.StoreInt64(&w.leaseDeadline, 0)
+	w.workerID = -1
+	w.registered = false
+	if w.heartbeatCancel != nil {
+		w.heartbeatCancel()
+		w.heartbeatCancel = nil
+		w.heartbeatCtx = nil
+		w.heartbeatRunning = false
+	}
+	maxWorkerID := w.maxWorkerID
+	w.mu.Unlock()
+
+	if maxWorkerID < 0 {
+		return fmt.Errorf("cannot reacquire worker ID: maxWorkerID unknown")
+	}
+
+	// First, a few synchronous attempts so a transient blip recovers immediately and the
+	// heartbeat loop is back before we even return. RegisterWorkerID, on success: pushes
+	// the fresh worker ID into the generator (onWorkerIDChange), starts a NEW heartbeat
+	// loop on a valid background context, then marks the worker healthy.
+	const syncAttempts = 3
+	if newWorkerID, err := w.attemptRegisterFresh(maxWorkerID, syncAttempts); err == nil {
+		log.Infof("acquired fresh worker ID %d (replacing %d)", newWorkerID, previousWorkerID)
+		return nil
+	}
+
+	// Still failing (e.g. sustained Redis outage). Do NOT brick: spawn a detached
+	// background loop that keeps retrying with backoff until success or shutdown. Health
+	// stays 0 (generation blocked) until it succeeds. Only one loop may run at a time.
+	if atomic.CompareAndSwapInt32(&w.recovering, 0, 1) {
+		go w.backgroundRecover(maxWorkerID, previousWorkerID)
+	}
+	return fmt.Errorf("failed to reacquire fresh worker ID (was %d) after %d attempts; background recovery running", previousWorkerID, syncAttempts)
+}
+
+// attemptRegisterFresh runs up to `attempts` full RegisterWorkerID cycles, each on a
+// fresh independent context (never derived from the cancelled heartbeat ctx), with
+// backoff between attempts. Returns the new worker ID on success.
+func (w *WorkerIDManager) attemptRegisterFresh(maxWorkerID int64, attempts int) (int64, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if atomic.LoadInt32(&w.shuttingDown) == 1 {
+			return -1, fmt.Errorf("worker manager shutting down")
+		}
+		if i > 0 {
+			// Backoff between attempts: 200ms, 400ms, ... capped at 5s.
+			backoff := time.Duration(200*(1<<uint(i-1))) * time.Millisecond
+			if backoff > 5*time.Second {
+				backoff = 5 * time.Second
+			}
+			time.Sleep(backoff)
+		}
+		// Fresh, independent context — NOT a child of the just-cancelled heartbeat ctx.
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		newWorkerID, err := w.RegisterWorkerID(timeoutCtx, maxWorkerID)
+		cancel()
+		if err == nil {
+			return newWorkerID, nil
+		}
+		lastErr = err
+		log.Warnf("fresh worker ID registration attempt %d/%d failed: %v", i+1, attempts, err)
+	}
+	return -1, lastErr
+}
+
+// backgroundRecover keeps retrying fresh-worker-ID acquisition with backoff until it
+// succeeds or the manager is shutting down. Runs detached on context.Background(); health
+// remains 0 (generation blocked) for the whole duration so no ID is emitted with an
+// unowned worker id. Cleared via the recovering flag on exit.
+func (w *WorkerIDManager) backgroundRecover(maxWorkerID, previousWorkerID int64) {
+	defer atomic.StoreInt32(&w.recovering, 0)
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("eon-id background recovery recovered from panic: %v", r)
+		}
+	}()
+
+	backoff := 1 * time.Second
+	const maxBackoff = 10 * time.Second
+	for {
+		if atomic.LoadInt32(&w.shuttingDown) == 1 {
+			log.Infof("eon-id background recovery stopping: worker manager shutting down")
+			return
+		}
+		// If something else already re-registered (e.g. a new heartbeat recovered), stop.
+		w.mu.RLock()
+		alreadyRegistered := w.registered
+		w.mu.RUnlock()
+		if alreadyRegistered {
+			return
+		}
+
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		newWorkerID, err := w.RegisterWorkerID(timeoutCtx, maxWorkerID)
+		cancel()
+		if err == nil {
+			log.Infof("acquired fresh worker ID %d (replacing %d) via background recovery", newWorkerID, previousWorkerID)
+			return
+		}
+		log.Warnf("eon-id background recovery attempt failed, retrying in %s: %v", backoff, err)
+		time.Sleep(backoff)
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
 	}
 }
 
@@ -461,6 +628,10 @@ func (w *WorkerIDManager) sendHeartbeat() error {
 	}
 	switch code {
 	case 1:
+		// TTL was just refreshed to w.ttl from now; extend the lease deadline so
+		// IsHealthy keeps allowing generation. The heartbeat interval (well below ttl)
+		// guarantees this renews comfortably before the previous deadline elapses.
+		w.setLeaseDeadline(time.Now())
 		return nil // Success
 	case 0:
 		return fmt.Errorf("worker ID %d was taken by another instance", workerID)
@@ -476,6 +647,8 @@ func (w *WorkerIDManager) sendHeartbeat() error {
 // UnregisterWorkerID unregisters the worker ID.
 // Only deletes the worker key and removes from registry when the key's instance_id matches this instance (safe for graceful shutdown).
 func (w *WorkerIDManager) UnregisterWorkerID(ctx context.Context) error {
+	// Signal any in-flight background recovery loop to stop resurrecting state.
+	atomic.StoreInt32(&w.shuttingDown, 1)
 	w.mu.Lock()
 	if !w.registered {
 		w.mu.Unlock()
